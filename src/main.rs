@@ -1,3 +1,4 @@
+mod config;
 mod credentials;
 mod diff;
 mod sanitize;

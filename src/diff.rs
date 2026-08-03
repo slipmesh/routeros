@@ -358,6 +358,47 @@ pub fn bgp_networks(
     )
 }
 
+// ── singleton values (interface bridge, filter rule, ospf/bgp instance+area) ──
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredBridge {
+    pub name: String,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredFilterRule {
+    pub chain: String,
+    pub rule: String,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredOspfInstance {
+    pub name: String,
+    pub version: u8,
+    pub router_id: Ipv4Addr,
+    pub in_filter_chain: String,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredOspfArea {
+    pub name: String,
+    pub area_id: String,
+    pub instance: String,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredBgpInstance {
+    pub name: String,
+    pub as_number: u32,
+    pub router_id: Ipv4Addr,
+    pub routing_table: String,
+    pub disabled: bool,
+}
+
 // ── routing bgp connection (exclusive) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]

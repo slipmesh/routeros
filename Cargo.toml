@@ -1,0 +1,33 @@
+[package]
+name = "routeros"
+version = "0.1.0"
+edition = "2024"
+authors = ["Evgeniy Slizevich <evgeniy@slizevich.net>"]
+# AGPL-3.0-only, not MIT/Apache-2.0 like the sibling slipmesh-operators/slipmesh-core repos: this
+# binary depends on mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio)
+# is AGPL-3.0-only - any binary linking it must itself be AGPL-3.0-compatible. See AGENTS.md.
+license = "AGPL-3.0-only"
+description = "One-shot CLI tool that converges a MikroTik RouterOS device to the slipmesh mesh's desired state, read from Kubernetes CRDs"
+repository = "https://github.com/slipmesh/routeros"
+
+[dependencies]
+# Pinned to a specific rev, not a branch - reproducible builds, bumped deliberately (see AGENTS.md).
+slipmesh-core = { git = "https://github.com/slipmesh/core", rev = "dd6673c74ae6c1d3eed71671c3789871300f8199" }
+
+mikrotik-rs = { version = "0.8.0", features = ["tokio-tls"] }
+
+anyhow = "1.0.104"
+base64 = "0.23.0"
+clap = { version = "4.6.5", features = ["derive"] }
+k8s-openapi = { version = "0.28.0", features = ["v1_36", "schemars"] }
+kube = { version = "4.2.0", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "derive"] }
+rustls = { version = "0.23.43", default-features = false, features = ["aws-lc-rs"] }
+rustls-native-certs = "0.8.4"
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]

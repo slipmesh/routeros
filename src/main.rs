@@ -1,3 +1,4 @@
+mod allocation;
 mod config;
 mod credentials;
 mod diff;

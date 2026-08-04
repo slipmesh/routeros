@@ -11,7 +11,7 @@
 use kube::api::{Patch, PatchParams};
 use kube::{Api, Resource, ResourceExt};
 use serde_json::json;
-use slipmesh_core::mesh_types::{MeshLink, MeshNode};
+use slipmesh_core::mesh_types::{MeshLink, MeshPool};
 use slipmesh_core::router_types::{RouterNode, RouterPool};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -43,7 +43,11 @@ pub fn with_finalizer(finalizers: &[String], finalizer: &str) -> Vec<String> {
 }
 
 pub fn without_finalizer(finalizers: &[String], finalizer: &str) -> Vec<String> {
-    finalizers.iter().filter(|f| f.as_str() != finalizer).cloned().collect()
+    finalizers
+        .iter()
+        .filter(|f| f.as_str() != finalizer)
+        .cloned()
+        .collect()
 }
 
 /// Loopback allocation is only needed once - after that, `status.loopback` is always populated
@@ -58,7 +62,12 @@ pub fn needs_loopback_allocation(node: &RouterNode) -> bool {
 /// peer's `mesh` operator already drove this allocation - `hq` only ever reads `status.network`/
 /// `status.port`, never allocates on that link's behalf.
 pub fn needs_link_allocation(link: &MeshLink, own_node_name: &str) -> bool {
-    link.spec.is_lower(own_node_name) && link.status.as_ref().and_then(|s| s.network.as_ref()).is_none()
+    link.spec.is_lower(own_node_name)
+        && link
+            .status
+            .as_ref()
+            .and_then(|s| s.network.as_ref())
+            .is_none()
 }
 
 /// Every `MeshLink` `hq` is a party to, already marked for deletion, that still carries `hq`'s own
@@ -150,7 +159,9 @@ pub async fn allocate_loopback(
     if let Some(pinned) = node.spec.loopback {
         let pool = pools
             .iter()
-            .find(|p| slipmesh_core::cidr::cidr_contains(p.value.network, p.value.prefix_len, pinned))
+            .find(|p| {
+                slipmesh_core::cidr::cidr_contains(p.value.network, p.value.prefix_len, pinned)
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!("no RouterPool configured contains pinned loopback {pinned}")
             })?;
@@ -196,30 +207,144 @@ async fn patch_router_node_loopback(
     Ok(())
 }
 
-/// Adds `finalizer` to `name`'s `metadata.finalizers` if not already present. A no-op patch is
-/// avoided by the caller only ever invoking this via [`links_needing_finalizer`]'s result.
-pub async fn add_finalizer(
-    links: &Api<MeshLink>,
+struct MeshPoolInfo {
+    network: Ipv4Addr,
+    prefix_len: u8,
+    base_port: u16,
+}
+
+async fn valid_mesh_pools(
+    pools_api: &Api<MeshPool>,
+) -> anyhow::Result<Vec<slipmesh_core::pool::ParsedPool<MeshPoolInfo>>> {
+    slipmesh_core::pool::valid_pools(pools_api, |p| {
+        let (network, prefix_len) = slipmesh_core::cidr::parse_network_cidr(&p.spec.network)?;
+        Ok(MeshPoolInfo {
+            network,
+            prefix_len,
+            base_port: p.spec.base_port,
+        })
+    })
+    .await
+}
+
+async fn patch_link_allocation(
+    api: &Api<MeshLink>,
     name: &str,
-    current: &[String],
-    finalizer: &str,
+    pool: &str,
+    network: &str,
+    port: u16,
 ) -> anyhow::Result<()> {
-    let patch = json!({ "metadata": { "finalizers": with_finalizer(current, finalizer) } });
-    links
-        .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+    let patch = json!({ "status": { "pool": pool, "network": network, "port": port } });
+    api.patch_status(name, &PatchParams::apply("routeros"), &Patch::Merge(&patch))
         .await?;
     Ok(())
 }
 
-pub async fn remove_finalizer(
-    links: &Api<MeshLink>,
+/// Allocates (or, for a pinned `spec.network`, registers) this link's `/31`+port and patches
+/// `MeshLink.status`. Only ever called when `hq` is `node_a` (see [`needs_link_allocation`]) -
+/// mirrors `mesh::reconcile::allocate_link_addressing`.
+pub async fn allocate_link(
+    mesh_pools: &Api<MeshPool>,
+    mesh_links: &Api<MeshLink>,
+    link: &MeshLink,
+    link_name: &str,
+) -> anyhow::Result<(String, u16)> {
+    let pools = valid_mesh_pools(mesh_pools).await?;
+
+    if let Some(pinned) = &link.spec.network {
+        let (pinned_addr, prefix) = slipmesh_core::cidr::parse_cidr(pinned)?;
+        anyhow::ensure!(prefix == 31, "pinned network {pinned:?} is not a /31");
+        let pool = pools
+            .iter()
+            .find(|p| {
+                slipmesh_core::cidr::cidr_contains(p.value.network, p.value.prefix_len, pinned_addr)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("no MeshPool configured contains pinned network {pinned:?}")
+            })?;
+        let index = slipmesh_core::mesh_math::index_of(pool.value.network, pinned_addr).ok_or_else(|| {
+            anyhow::anyhow!(
+                "pinned network {pinned:?} is not aligned to a /31 slot boundary of MeshPool {:?}",
+                pool.name
+            )
+        })?;
+        let port = pool
+            .value
+            .base_port
+            .checked_add(u16::try_from(index).map_err(|_| anyhow::anyhow!("link index overflow"))?)
+            .ok_or_else(|| anyhow::anyhow!("port overflow allocating pinned network {pinned:?}"))?;
+        let (value, port) = slipmesh_core::pool::allocate(
+            mesh_pools,
+            &pool.name,
+            link_name,
+            std::iter::once((pinned.clone(), Some(port))),
+        )
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("pinned network {pinned:?} is already allocated to another MeshLink")
+        })?;
+        let port = port.expect("mesh candidates always carry Some(port)");
+        patch_link_allocation(mesh_links, link_name, &pool.name, &value, port).await?;
+        return Ok((value, port));
+    }
+
+    for pool in &pools {
+        let candidates = slipmesh_core::mesh_math::candidate_networks(
+            pool.value.network,
+            pool.value.prefix_len,
+            pool.value.base_port,
+        )
+        .map(|(v, p)| (v, Some(p)));
+        if let Some((value, port)) =
+            slipmesh_core::pool::allocate(mesh_pools, &pool.name, link_name, candidates).await?
+        {
+            let port = port.expect("mesh candidates always carry Some(port)");
+            patch_link_allocation(mesh_links, link_name, &pool.name, &value, port).await?;
+            return Ok((value, port));
+        }
+    }
+    anyhow::bail!("no MeshPool has room for a new link")
+}
+
+/// Adds `finalizer` to `name`'s `metadata.finalizers` if not already present. A no-op patch is
+/// avoided by the caller only ever invoking this via [`links_needing_finalizer`]'s result.
+/// Generic over `K` - the finalizer patch shape (`metadata.finalizers`) is identical regardless of
+/// resource kind, used for both `MeshLink` (per-node finalizer) and `RouterNode`
+/// ([`ROUTER_POOL_FINALIZER`]).
+pub async fn add_finalizer<K>(
+    api: &Api<K>,
     name: &str,
     current: &[String],
     finalizer: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    K: Clone
+        + std::fmt::Debug
+        + for<'de> serde::Deserialize<'de>
+        + kube::Resource<DynamicType = ()>
+        + serde::Serialize,
+{
+    let patch = json!({ "metadata": { "finalizers": with_finalizer(current, finalizer) } });
+    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+pub async fn remove_finalizer<K>(
+    api: &Api<K>,
+    name: &str,
+    current: &[String],
+    finalizer: &str,
+) -> anyhow::Result<()>
+where
+    K: Clone
+        + std::fmt::Debug
+        + for<'de> serde::Deserialize<'de>
+        + kube::Resource<DynamicType = ()>
+        + serde::Serialize,
+{
     let patch = json!({ "metadata": { "finalizers": without_finalizer(current, finalizer) } });
-    links
-        .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
         .await?;
     Ok(())
 }
@@ -240,19 +365,6 @@ pub async fn release_router_pool_slot(
     node_name: &str,
 ) -> anyhow::Result<()> {
     slipmesh_core::pool::release(router_pools, pool_name, node_name).await
-}
-
-/// Finds the peer `MeshNode` for `link` from `hq`'s perspective - used by the teardown path to
-/// know which `mesh-<label>` interface to remove from the device (best-effort: if the peer
-/// `MeshNode` is already gone too, the caller can't know the interface name and must fall back to
-/// leaving it for a later full-state comparison, same as `mesh::reconcile`'s own comment on this).
-pub fn peer_mesh_node_for_link<'a>(
-    link: &MeshLink,
-    mesh_nodes: &'a [Arc<MeshNode>],
-    own_node_name: &str,
-) -> Option<&'a Arc<MeshNode>> {
-    let peer = link.spec.peer_label(own_node_name)?;
-    mesh_nodes.iter().find(|n| n.name_any() == peer)
 }
 
 #[cfg(test)]
@@ -343,9 +455,10 @@ mod tests {
     #[test]
     fn links_pending_teardown_requires_deletion_timestamp_and_our_finalizer() {
         let mut deleting = link("hq", "fra");
-        deleting.meta_mut().deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-            k8s_openapi::jiff::Timestamp::now(),
-        ));
+        deleting.meta_mut().deletion_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                k8s_openapi::jiff::Timestamp::now(),
+            ));
         deleting.meta_mut().finalizers = Some(vec![mesh_link_finalizer("hq")]);
 
         let not_deleting = link("hq", "lon");

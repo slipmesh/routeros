@@ -47,8 +47,7 @@ where
     D: Clone,
     K: Eq + Hash,
 {
-    let mut desired_by_key: HashMap<K, &D> =
-        desired.iter().map(|d| (desired_key(d), d)).collect();
+    let mut desired_by_key: HashMap<K, &D> = desired.iter().map(|d| (desired_key(d), d)).collect();
 
     let mut remove = Vec::new();
     let mut update = Vec::new();
@@ -572,7 +571,10 @@ mod wireguard_interfaces_tests {
         let cur = vec![current("*1", "mesh-fra", 51820)];
         let des = vec![desired("mesh-fra", 51821)];
         let plan = wireguard_interfaces(&cur, &des);
-        assert_eq!(plan.update, vec![("*1".to_string(), desired("mesh-fra", 51821))]);
+        assert_eq!(
+            plan.update,
+            vec![("*1".to_string(), desired("mesh-fra", 51821))]
+        );
         assert!(plan.add.is_empty());
         assert!(plan.remove.is_empty());
     }
@@ -591,7 +593,10 @@ mod wireguard_interfaces_tests {
         ];
         let plan = wireguard_interfaces(&cur, &des);
         assert_eq!(plan.add, vec![desired("mesh-new", 51823)]);
-        assert_eq!(plan.update, vec![("*2".to_string(), desired("mesh-lon", 51822))]);
+        assert_eq!(
+            plan.update,
+            vec![("*2".to_string(), desired("mesh-lon", 51822))]
+        );
         assert_eq!(plan.remove, vec!["*3".to_string()]);
     }
 }

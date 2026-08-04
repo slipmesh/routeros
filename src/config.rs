@@ -87,19 +87,33 @@ struct AcceptedLink {
 /// this link. None of these are hard errors - a future run converges once the missing piece
 /// appears (mirroring how `mesh::reconcile` itself treats the exact same conditions as "await
 /// change", not a failure).
-fn accept_link(link: &MeshLink, mesh_nodes: &[Arc<MeshNode>], own_node_name: &str) -> Option<AcceptedLink> {
+fn accept_link(
+    link: &MeshLink,
+    mesh_nodes: &[Arc<MeshNode>],
+    own_node_name: &str,
+) -> Option<AcceptedLink> {
     let link_name = link.metadata.name.as_deref().unwrap_or("<unnamed>");
     let peer_name = link.spec.peer_label(own_node_name)?;
 
-    let Some(peer_node) = mesh_nodes.iter().find(|n| n.metadata.name.as_deref() == Some(peer_name))
+    let Some(peer_node) = mesh_nodes
+        .iter()
+        .find(|n| n.metadata.name.as_deref() == Some(peer_name))
     else {
-        tracing::warn!(link = link_name, peer = peer_name, "MeshNode not found, skipping link");
+        tracing::warn!(
+            link = link_name,
+            peer = peer_name,
+            "MeshNode not found, skipping link"
+        );
         return None;
     };
 
     let Some(peer_public_key_b64) = peer_node.status.as_ref().and_then(|s| s.public_key.clone())
     else {
-        tracing::warn!(link = link_name, peer = peer_name, "peer's public key not computed yet, skipping link");
+        tracing::warn!(
+            link = link_name,
+            peer = peer_name,
+            "peer's public key not computed yet, skipping link"
+        );
         return None;
     };
 
@@ -108,11 +122,19 @@ fn accept_link(link: &MeshLink, mesh_nodes: &[Arc<MeshNode>], own_node_name: &st
         return None;
     };
     let Ok((network_addr, prefix_len)) = slipmesh_core::cidr::parse_cidr(link_network) else {
-        tracing::warn!(link = link_name, network = link_network, "status.network is not a valid CIDR, skipping link");
+        tracing::warn!(
+            link = link_name,
+            network = link_network,
+            "status.network is not a valid CIDR, skipping link"
+        );
         return None;
     };
     if prefix_len != 31 {
-        tracing::warn!(link = link_name, network = link_network, "status.network is not a /31, skipping link");
+        tracing::warn!(
+            link = link_name,
+            network = link_network,
+            "status.network is not a /31, skipping link"
+        );
         return None;
     }
     let Some(listen_port) = link.status.as_ref().and_then(|s| s.port) else {
@@ -136,7 +158,10 @@ fn accept_link(link: &MeshLink, mesh_nodes: &[Arc<MeshNode>], own_node_name: &st
     }
     let iface = format!("mesh-{}", peer_node.spec.mesh_label);
 
-    let (endpoint_address, endpoint_port, persistent_keepalive) = match peer_node.spec.endpoint.as_deref()
+    let (endpoint_address, endpoint_port, persistent_keepalive) = match peer_node
+        .spec
+        .endpoint
+        .as_deref()
     {
         Some(endpoint) => match validate_endpoint(endpoint) {
             Ok(()) => (
@@ -172,7 +197,15 @@ pub fn desired_state(
     mesh_links: &[Arc<MeshLink>],
     router_nodes: &[Arc<RouterNode>],
     physically_connected_prefixes: &[String],
-) -> DesiredState {
+) -> anyhow::Result<DesiredState> {
+    // Our own labels get referenced by every peer that links to us (interface/connection naming
+    // on *their* side) - validated here for the same reason peer labels are validated in
+    // accept_link: defense in depth on top of the CRD schema's own regex.
+    validate_label(own.mesh_label)
+        .map_err(|e| anyhow::anyhow!("this device's own mesh_label failed validation: {e}"))?;
+    validate_label(own.router_label)
+        .map_err(|e| anyhow::anyhow!("this device's own router_label failed validation: {e}"))?;
+
     let mut wireguard_interfaces = Vec::new();
     let mut ip_addresses = vec![DesiredIpAddress {
         address: format!("{}/32", own.loopback),
@@ -230,7 +263,9 @@ pub fn desired_state(
     // successfully configuring its own side (run.rs, post-apply) - so a brand-new link's OSPF
     // template appears one run after its wireguard interface does, matching the same eventual
     // consistency the mesh/router operators already exhibit across separate reconcile passes.
-    for iface in slipmesh_core::desired_state::ospf_ifaces_from(mesh_links, mesh_nodes, own.node_name) {
+    for iface in
+        slipmesh_core::desired_state::ospf_ifaces_from(mesh_links, mesh_nodes, own.node_name)
+    {
         ospf_interface_templates.push(DesiredOspfInterfaceTemplate {
             interfaces: iface,
             area: OSPF_AREA.to_string(),
@@ -276,7 +311,7 @@ pub fn desired_state(
         });
     }
 
-    DesiredState {
+    Ok(DesiredState {
         wireguard_interfaces,
         ip_addresses,
         wireguard_peers,
@@ -313,14 +348,16 @@ pub fn desired_state(
             disabled: false,
         },
         bgp_connections,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-    use slipmesh_core::mesh_types::{MeshLinkSpec, MeshLinkStatus, MeshNodeSpec, MeshNodeStatus, Obfuscation};
+    use slipmesh_core::mesh_types::{
+        MeshLinkSpec, MeshLinkStatus, MeshNodeSpec, MeshNodeStatus, Obfuscation,
+    };
     use slipmesh_core::router_types::{RouterNodeSpec, RouterNodeStatus};
 
     fn own() -> OwnIdentity<'static> {
@@ -333,7 +370,12 @@ mod tests {
         }
     }
 
-    fn mesh_node(name: &str, mesh_label: &str, endpoint: Option<&str>, public_key: Option<&str>) -> Arc<MeshNode> {
+    fn mesh_node(
+        name: &str,
+        mesh_label: &str,
+        endpoint: Option<&str>,
+        public_key: Option<&str>,
+    ) -> Arc<MeshNode> {
         let mut n = MeshNode::new(
             name,
             MeshNodeSpec {
@@ -394,7 +436,7 @@ mod tests {
 
     #[test]
     fn always_includes_the_loopback_address_and_singletons() {
-        let state = desired_state(&own(), 65062, &[], &[], &[], &[]);
+        let state = desired_state(&own(), 65062, &[], &[], &[], &[]).unwrap();
         assert_eq!(state.ip_addresses.len(), 1);
         assert_eq!(state.ip_addresses[0].address, "10.62.0.1/32");
         assert_eq!(state.ip_addresses[0].interface, LOOPBACK_BRIDGE);
@@ -413,12 +455,15 @@ mod tests {
             mesh_node("fra", "fra1", Some("fra.example.com"), Some("fra-pub")),
         ];
         let links = vec![ready_link("hq", "fra", "10.0.0.0/31", 51820)];
-        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]);
+        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]).unwrap();
 
         assert_eq!(state.wireguard_interfaces.len(), 1);
         assert_eq!(state.wireguard_interfaces[0].name, "mesh-fra1");
         assert_eq!(state.wireguard_interfaces[0].listen_port, 51820);
-        assert_eq!(state.wireguard_interfaces[0].private_key_b64, "own-private-key");
+        assert_eq!(
+            state.wireguard_interfaces[0].private_key_b64,
+            "own-private-key"
+        );
 
         assert_eq!(state.wireguard_peers.len(), 1);
         let peer = &state.wireguard_peers[0];
@@ -428,8 +473,18 @@ mod tests {
         assert_eq!(peer.persistent_keepalive, Some(25));
 
         // hq is node_a -> gets the low address of the /31.
-        assert!(state.ip_addresses.iter().any(|a| a.address == "10.0.0.0/31" && a.interface == "mesh-fra1"));
-        assert!(state.list_members.iter().any(|m| m.interface == "mesh-fra1" && m.list == "LAN"));
+        assert!(
+            state
+                .ip_addresses
+                .iter()
+                .any(|a| a.address == "10.0.0.0/31" && a.interface == "mesh-fra1")
+        );
+        assert!(
+            state
+                .list_members
+                .iter()
+                .any(|m| m.interface == "mesh-fra1" && m.list == "LAN")
+        );
     }
 
     #[test]
@@ -439,20 +494,25 @@ mod tests {
             mesh_node("lon", "lon1", None, Some("lon-pub")), // no endpoint - NAT'd
         ];
         let links = vec![ready_link("lon", "hq", "10.0.0.2/31", 51821)];
-        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]);
+        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]).unwrap();
 
         assert_eq!(state.wireguard_peers.len(), 1);
         assert_eq!(state.wireguard_peers[0].endpoint_address, None);
         assert_eq!(state.wireguard_peers[0].endpoint_port, None);
         assert_eq!(state.wireguard_peers[0].persistent_keepalive, None);
         // hq is node_b here -> gets the high address of the /31.
-        assert!(state.ip_addresses.iter().any(|a| a.address == "10.0.0.3/31"));
+        assert!(
+            state
+                .ip_addresses
+                .iter()
+                .any(|a| a.address == "10.0.0.3/31")
+        );
     }
 
     #[test]
     fn skips_a_link_whose_peer_meshnode_is_missing() {
         let links = vec![ready_link("hq", "ghost", "10.0.0.0/31", 51820)];
-        let state = desired_state(&own(), 65062, &[], &links, &[], &[]);
+        let state = desired_state(&own(), 65062, &[], &links, &[], &[]).unwrap();
         assert!(state.wireguard_interfaces.is_empty());
         assert!(state.wireguard_peers.is_empty());
     }
@@ -464,7 +524,7 @@ mod tests {
             mesh_node("fra", "fra1", None, None), // public_key not computed yet
         ];
         let links = vec![ready_link("hq", "fra", "10.0.0.0/31", 51820)];
-        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]);
+        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]).unwrap();
         assert!(state.wireguard_interfaces.is_empty());
     }
 
@@ -484,7 +544,7 @@ mod tests {
             },
         );
         l.status = None; // never allocated
-        let state = desired_state(&own(), 65062, &mesh_nodes, &[Arc::new(l)], &[], &[]);
+        let state = desired_state(&own(), 65062, &mesh_nodes, &[Arc::new(l)], &[], &[]).unwrap();
         assert!(state.wireguard_interfaces.is_empty());
     }
 
@@ -495,14 +555,14 @@ mod tests {
             mesh_node("lon", "lon1", None, Some("lon-pub")),
         ];
         let links = vec![ready_link("fra", "lon", "10.0.0.0/31", 51820)];
-        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]);
+        let state = desired_state(&own(), 65062, &mesh_nodes, &links, &[], &[]).unwrap();
         assert!(state.wireguard_interfaces.is_empty());
     }
 
     #[test]
     fn physically_connected_prefixes_become_bgp_networks() {
         let prefixes = vec!["192.168.252.0/24".to_string(), "not-a-cidr".to_string()];
-        let state = desired_state(&own(), 65062, &[], &[], &[], &prefixes);
+        let state = desired_state(&own(), 65062, &[], &[], &[], &prefixes).unwrap();
         assert_eq!(state.bgp_networks.len(), 1);
         assert_eq!(state.bgp_networks[0].address, "192.168.252.0/24");
         assert_eq!(state.bgp_networks[0].list, BGP_NETWORKS_LIST);
@@ -515,7 +575,7 @@ mod tests {
             router_node("fra", "fra", Ipv4Addr::new(10, 62, 0, 2)),
             router_node("lon", "lon", Ipv4Addr::new(10, 62, 0, 3)),
         ];
-        let state = desired_state(&own(), 65062, &[], &[], &router_nodes, &[]);
+        let state = desired_state(&own(), 65062, &[], &[], &router_nodes, &[]).unwrap();
         assert_eq!(state.bgp_connections.len(), 2);
         assert!(state.bgp_connections.iter().any(|c| c.name == "bgp-fra"
             && c.remote_address == Ipv4Addr::new(10, 62, 0, 2)

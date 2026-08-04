@@ -14,15 +14,14 @@
 use crate::credentials::RouterCredentials;
 use crate::diff::{
     CurrentAddressListEntry, CurrentBgpConnection, CurrentIpAddress, CurrentListMember,
-    CurrentOspfInterfaceTemplate, CurrentWireguardInterface, CurrentWireguardPeer, DesiredAddressListEntry,
-    DesiredBgpConnection, DesiredBridge, DesiredFilterRule, DesiredIpAddress, DesiredListMember,
-    DesiredOspfArea, DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
-    DesiredWireguardPeer, Plan,
+    CurrentOspfInterfaceTemplate, CurrentWireguardInterface, CurrentWireguardPeer,
+    DesiredAddressListEntry, DesiredBgpConnection, DesiredBridge, DesiredFilterRule,
+    DesiredIpAddress, DesiredListMember, DesiredOspfArea, DesiredOspfInstance,
+    DesiredOspfInterfaceTemplate, DesiredWireguardInterface, DesiredWireguardPeer, Plan,
 };
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 
 type Row = HashMap<String, Option<String>>;
 
@@ -45,7 +44,12 @@ fn get_bool_flag(row: &Row, key: &str) -> bool {
 }
 
 fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
-    get(row, key).map(|v| v.parse::<u16>().map_err(|e| anyhow::anyhow!("field {key:?} = {v:?} is not a u16: {e}"))).transpose()
+    get(row, key)
+        .map(|v| {
+            v.parse::<u16>()
+                .map_err(|e| anyhow::anyhow!("field {key:?} = {v:?} is not a u16: {e}"))
+        })
+        .transpose()
 }
 
 /// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
@@ -73,7 +77,10 @@ pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice
     Ok(device)
 }
 
-async fn execute(device: &MikrotikDevice, cmd: CommandBuilder<mikrotik_rs::proto::command::Cmd>) -> anyhow::Result<Vec<Row>> {
+async fn execute(
+    device: &MikrotikDevice,
+    cmd: CommandBuilder<mikrotik_rs::proto::command::Cmd>,
+) -> anyhow::Result<Vec<Row>> {
     let mut rx = device
         .send_command(cmd.build())
         .await
@@ -84,7 +91,11 @@ async fn execute(device: &MikrotikDevice, cmd: CommandBuilder<mikrotik_rs::proto
             Event::Reply { response, .. } => rows.push(response.attributes),
             Event::Done { .. } | Event::Empty { .. } => return Ok(rows),
             Event::Trap { response, .. } => {
-                anyhow::bail!("RouterOS command failed: {} (category: {:?})", response.message, response.category)
+                anyhow::bail!(
+                    "RouterOS command failed: {} (category: {:?})",
+                    response.message,
+                    response.category
+                )
             }
             Event::Fatal { reason } => anyhow::bail!("RouterOS connection failed: {reason}"),
         }
@@ -93,10 +104,18 @@ async fn execute(device: &MikrotikDevice, cmd: CommandBuilder<mikrotik_rs::proto
 }
 
 async fn print(device: &MikrotikDevice, path: &str) -> anyhow::Result<Vec<Row>> {
-    execute(device, CommandBuilder::new().command(&format!("{path}/print"))).await
+    execute(
+        device,
+        CommandBuilder::new().command(&format!("{path}/print")),
+    )
+    .await
 }
 
-async fn add(device: &MikrotikDevice, path: &str, attrs: &[(&str, Option<&str>)]) -> anyhow::Result<String> {
+async fn add(
+    device: &MikrotikDevice,
+    path: &str,
+    attrs: &[(&str, Option<&str>)],
+) -> anyhow::Result<String> {
     let mut b = CommandBuilder::new().command(&format!("{path}/add"));
     for (k, v) in attrs {
         b = b.attribute(k, *v);
@@ -105,11 +124,22 @@ async fn add(device: &MikrotikDevice, path: &str, attrs: &[(&str, Option<&str>)]
     // `/add` typically replies with a single row carrying the new object's `.id` (`=ret=*1`) - not
     // load-bearing for callers here (every apply_* re-reads on the next run), so a missing id in
     // the reply is tolerated rather than treated as a hard error.
-    Ok(rows.first().and_then(|r| get(r, "ret")).unwrap_or_default().to_string())
+    Ok(rows
+        .first()
+        .and_then(|r| get(r, "ret"))
+        .unwrap_or_default()
+        .to_string())
 }
 
-async fn set(device: &MikrotikDevice, path: &str, id: &str, attrs: &[(&str, Option<&str>)]) -> anyhow::Result<()> {
-    let mut b = CommandBuilder::new().command(&format!("{path}/set")).attribute(".id", Some(id));
+async fn set(
+    device: &MikrotikDevice,
+    path: &str,
+    id: &str,
+    attrs: &[(&str, Option<&str>)],
+) -> anyhow::Result<()> {
+    let mut b = CommandBuilder::new()
+        .command(&format!("{path}/set"))
+        .attribute(".id", Some(id));
     for (k, v) in attrs {
         b = b.attribute(k, *v);
     }
@@ -120,7 +150,9 @@ async fn set(device: &MikrotikDevice, path: &str, id: &str, attrs: &[(&str, Opti
 async fn remove(device: &MikrotikDevice, path: &str, id: &str) -> anyhow::Result<()> {
     execute(
         device,
-        CommandBuilder::new().command(&format!("{path}/remove")).attribute(".id", Some(id)),
+        CommandBuilder::new()
+            .command(&format!("{path}/remove"))
+            .attribute(".id", Some(id)),
     )
     .await?;
     Ok(())
@@ -143,11 +175,20 @@ fn parse_wireguard_interface(row: &Row) -> anyhow::Result<CurrentWireguardInterf
     })
 }
 
-pub async fn read_wireguard_interfaces(device: &MikrotikDevice) -> anyhow::Result<Vec<CurrentWireguardInterface>> {
-    print(device, WIREGUARD_PATH).await?.iter().map(parse_wireguard_interface).collect()
+pub async fn read_wireguard_interfaces(
+    device: &MikrotikDevice,
+) -> anyhow::Result<Vec<CurrentWireguardInterface>> {
+    print(device, WIREGUARD_PATH)
+        .await?
+        .iter()
+        .map(parse_wireguard_interface)
+        .collect()
 }
 
-pub async fn apply_wireguard_interfaces(device: &MikrotikDevice, plan: &Plan<DesiredWireguardInterface>) -> anyhow::Result<()> {
+pub async fn apply_wireguard_interfaces(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredWireguardInterface>,
+) -> anyhow::Result<()> {
     for d in &plan.add {
         add(
             device,
@@ -201,11 +242,20 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
     })
 }
 
-pub async fn read_wireguard_peers(device: &MikrotikDevice) -> anyhow::Result<Vec<CurrentWireguardPeer>> {
-    print(device, WIREGUARD_PEERS_PATH).await?.iter().map(parse_wireguard_peer).collect()
+pub async fn read_wireguard_peers(
+    device: &MikrotikDevice,
+) -> anyhow::Result<Vec<CurrentWireguardPeer>> {
+    print(device, WIREGUARD_PEERS_PATH)
+        .await?
+        .iter()
+        .map(parse_wireguard_peer)
+        .collect()
 }
 
-pub async fn apply_wireguard_peers(device: &MikrotikDevice, plan: &Plan<DesiredWireguardPeer>) -> anyhow::Result<()> {
+pub async fn apply_wireguard_peers(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredWireguardPeer>,
+) -> anyhow::Result<()> {
     fn attrs(d: &DesiredWireguardPeer) -> Vec<(&str, Option<&str>)> {
         vec![
             ("interface", Some(d.interface.as_str())),
@@ -267,7 +317,10 @@ fn parse_ip_address(row: &Row) -> anyhow::Result<CurrentIpAddress> {
 /// Reads every `ip address` row, pre-filtered to this tool's own footprint (mesh-* interfaces and
 /// the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an unfiltered read must
 /// never reach that function.
-pub async fn read_ip_addresses(device: &MikrotikDevice, our_interfaces: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
+pub async fn read_ip_addresses(
+    device: &MikrotikDevice,
+    our_interfaces: &[String],
+) -> anyhow::Result<Vec<CurrentIpAddress>> {
     let rows = print(device, IP_ADDRESS_PATH).await?;
     rows.iter()
         .map(parse_ip_address)
@@ -278,7 +331,10 @@ pub async fn read_ip_addresses(device: &MikrotikDevice, our_interfaces: &[String
         .collect()
 }
 
-pub async fn apply_ip_addresses(device: &MikrotikDevice, plan: &Plan<DesiredIpAddress>) -> anyhow::Result<()> {
+pub async fn apply_ip_addresses(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredIpAddress>,
+) -> anyhow::Result<()> {
     for d in &plan.add {
         add(
             device,
@@ -292,7 +348,13 @@ pub async fn apply_ip_addresses(device: &MikrotikDevice, plan: &Plan<DesiredIpAd
         .await?;
     }
     for (id, d) in &plan.update {
-        set(device, IP_ADDRESS_PATH, id, &[("disabled", Some(if d.disabled { "yes" } else { "no" }))]).await?;
+        set(
+            device,
+            IP_ADDRESS_PATH,
+            id,
+            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+        )
+        .await?;
     }
     for id in &plan.remove {
         remove(device, IP_ADDRESS_PATH, id).await?;
@@ -303,7 +365,10 @@ pub async fn apply_ip_addresses(device: &MikrotikDevice, plan: &Plan<DesiredIpAd
 /// This device's own physically-connected subnets (every `ip address` interface that isn't a
 /// `mesh-*` tunnel or the loopback bridge), normalized to network base - the BGP-announced prefix
 /// set is computed fresh from this on every run, never configured (see AGENTS.md).
-pub async fn read_physically_connected_prefixes(device: &MikrotikDevice, loopback_bridge: &str) -> anyhow::Result<Vec<String>> {
+pub async fn read_physically_connected_prefixes(
+    device: &MikrotikDevice,
+    loopback_bridge: &str,
+) -> anyhow::Result<Vec<String>> {
     let rows = print(device, IP_ADDRESS_PATH).await?;
     let mut prefixes = Vec::new();
     for row in &rows {
@@ -313,7 +378,9 @@ pub async fn read_physically_connected_prefixes(device: &MikrotikDevice, loopbac
         }
         match address_to_network(&a.address) {
             Ok(network) => prefixes.push(network),
-            Err(e) => tracing::warn!(address = %a.address, interface = %a.interface, error = %e, "skipping unparsable physically-connected address"),
+            Err(e) => {
+                tracing::warn!(address = %a.address, interface = %a.interface, error = %e, "skipping unparsable physically-connected address")
+            }
         }
     }
     Ok(prefixes)
@@ -324,7 +391,10 @@ pub async fn read_physically_connected_prefixes(device: &MikrotikDevice, loopbac
 /// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<String> {
     let (addr, prefix_len) = slipmesh_core::cidr::parse_cidr(address)?;
-    let network = Ipv4Addr::from(slipmesh_core::cidr::network_addr(u32::from(addr), prefix_len));
+    let network = Ipv4Addr::from(slipmesh_core::cidr::network_addr(
+        u32::from(addr),
+        prefix_len,
+    ));
     Ok(format!("{network}/{prefix_len}"))
 }
 
@@ -344,18 +414,27 @@ fn parse_list_member(row: &Row) -> anyhow::Result<CurrentListMember> {
 
 /// Pre-filtered via `diff::is_our_list_member_footprint` - see that function's and
 /// `diff::list_members`'s doc comments.
-pub async fn read_list_members(device: &MikrotikDevice, desired_interfaces: &[String]) -> anyhow::Result<Vec<CurrentListMember>> {
+pub async fn read_list_members(
+    device: &MikrotikDevice,
+    desired_interfaces: &[String],
+) -> anyhow::Result<Vec<CurrentListMember>> {
     let rows = print(device, LIST_MEMBER_PATH).await?;
     rows.iter()
         .map(parse_list_member)
         .filter(|r| match r {
-            Ok(m) => m.list == crate::config::LAN_LIST && crate::diff::is_our_list_member_footprint(&m.interface, desired_interfaces),
+            Ok(m) => {
+                m.list == crate::config::LAN_LIST
+                    && crate::diff::is_our_list_member_footprint(&m.interface, desired_interfaces)
+            }
             Err(_) => true,
         })
         .collect()
 }
 
-pub async fn apply_list_members(device: &MikrotikDevice, plan: &Plan<DesiredListMember>) -> anyhow::Result<()> {
+pub async fn apply_list_members(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredListMember>,
+) -> anyhow::Result<()> {
     for d in &plan.add {
         add(
             device,
@@ -369,7 +448,13 @@ pub async fn apply_list_members(device: &MikrotikDevice, plan: &Plan<DesiredList
         .await?;
     }
     for (id, d) in &plan.update {
-        set(device, LIST_MEMBER_PATH, id, &[("disabled", Some(if d.disabled { "yes" } else { "no" }))]).await?;
+        set(
+            device,
+            LIST_MEMBER_PATH,
+            id,
+            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+        )
+        .await?;
     }
     for id in &plan.remove {
         remove(device, LIST_MEMBER_PATH, id).await?;
@@ -381,7 +466,10 @@ pub async fn apply_list_members(device: &MikrotikDevice, plan: &Plan<DesiredList
 
 const BRIDGE_PATH: &str = "/interface/bridge";
 
-pub async fn read_loopback_bridge(device: &MikrotikDevice, name: &str) -> anyhow::Result<Option<(String, DesiredBridge)>> {
+pub async fn read_loopback_bridge(
+    device: &MikrotikDevice,
+    name: &str,
+) -> anyhow::Result<Option<(String, DesiredBridge)>> {
     let rows = print(device, BRIDGE_PATH).await?;
     for row in &rows {
         let id = get_id(row)?;
@@ -398,24 +486,33 @@ pub async fn read_loopback_bridge(device: &MikrotikDevice, name: &str) -> anyhow
     Ok(None)
 }
 
-pub async fn apply_loopback_bridge(device: &MikrotikDevice, op: crate::diff::SingletonOp<DesiredBridge>) -> anyhow::Result<()> {
+pub async fn apply_loopback_bridge(
+    device: &MikrotikDevice,
+    op: crate::diff::SingletonOp<DesiredBridge>,
+) -> anyhow::Result<()> {
     use crate::diff::SingletonOp;
     match op {
         SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => {
-            add(
+        SingletonOp::Create(d) => add(
+            device,
+            BRIDGE_PATH,
+            &[
+                ("name", Some(d.name.as_str())),
+                ("protocol-mode", Some("none")),
+                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+            ],
+        )
+        .await
+        .map(|_| ()),
+        SingletonOp::Update(id, d) => {
+            set(
                 device,
                 BRIDGE_PATH,
-                &[
-                    ("name", Some(d.name.as_str())),
-                    ("protocol-mode", Some("none")),
-                    ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-                ],
+                &id,
+                &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
             )
             .await
-            .map(|_| ())
         }
-        SingletonOp::Update(id, d) => set(device, BRIDGE_PATH, &id, &[("disabled", Some(if d.disabled { "yes" } else { "no" }))]).await,
     }
 }
 
@@ -423,7 +520,10 @@ pub async fn apply_loopback_bridge(device: &MikrotikDevice, op: crate::diff::Sin
 
 const FILTER_RULE_PATH: &str = "/routing/filter/rule";
 
-pub async fn read_ospf_filter_rule(device: &MikrotikDevice, chain: &str) -> anyhow::Result<Option<(String, DesiredFilterRule)>> {
+pub async fn read_ospf_filter_rule(
+    device: &MikrotikDevice,
+    chain: &str,
+) -> anyhow::Result<Option<(String, DesiredFilterRule)>> {
     let rows = print(device, FILTER_RULE_PATH).await?;
     for row in &rows {
         let id = get_id(row)?;
@@ -441,7 +541,10 @@ pub async fn read_ospf_filter_rule(device: &MikrotikDevice, chain: &str) -> anyh
     Ok(None)
 }
 
-pub async fn apply_ospf_filter_rule(device: &MikrotikDevice, op: crate::diff::SingletonOp<DesiredFilterRule>) -> anyhow::Result<()> {
+pub async fn apply_ospf_filter_rule(
+    device: &MikrotikDevice,
+    op: crate::diff::SingletonOp<DesiredFilterRule>,
+) -> anyhow::Result<()> {
     use crate::diff::SingletonOp;
     match op {
         SingletonOp::NoOp => Ok(()),
@@ -456,7 +559,15 @@ pub async fn apply_ospf_filter_rule(device: &MikrotikDevice, op: crate::diff::Si
         )
         .await
         .map(|_| ()),
-        SingletonOp::Update(id, d) => set(device, FILTER_RULE_PATH, &id, &[("rule", Some(d.rule.as_str()))]).await,
+        SingletonOp::Update(id, d) => {
+            set(
+                device,
+                FILTER_RULE_PATH,
+                &id,
+                &[("rule", Some(d.rule.as_str()))],
+            )
+            .await
+        }
     }
 }
 
@@ -464,7 +575,10 @@ pub async fn apply_ospf_filter_rule(device: &MikrotikDevice, op: crate::diff::Si
 
 const OSPF_INSTANCE_PATH: &str = "/routing/ospf/instance";
 
-pub async fn read_ospf_instance(device: &MikrotikDevice, name: &str) -> anyhow::Result<Option<(String, DesiredOspfInstance)>> {
+pub async fn read_ospf_instance(
+    device: &MikrotikDevice,
+    name: &str,
+) -> anyhow::Result<Option<(String, DesiredOspfInstance)>> {
     let rows = print(device, OSPF_INSTANCE_PATH).await?;
     for row in &rows {
         let id = get_id(row)?;
@@ -474,7 +588,10 @@ pub async fn read_ospf_instance(device: &MikrotikDevice, name: &str) -> anyhow::
                 DesiredOspfInstance {
                     name: name.to_string(),
                     version: get(row, "version").unwrap_or("2").parse().unwrap_or(2),
-                    router_id: get(row, "router-id").unwrap_or_default().parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+                    router_id: get(row, "router-id")
+                        .unwrap_or_default()
+                        .parse()
+                        .unwrap_or(Ipv4Addr::UNSPECIFIED),
                     in_filter_chain: get(row, "in-filter-chain").unwrap_or_default().to_string(),
                     disabled: get_bool_flag(row, "disabled"),
                 },
@@ -484,7 +601,10 @@ pub async fn read_ospf_instance(device: &MikrotikDevice, name: &str) -> anyhow::
     Ok(None)
 }
 
-pub async fn apply_ospf_instance(device: &MikrotikDevice, op: crate::diff::SingletonOp<DesiredOspfInstance>) -> anyhow::Result<()> {
+pub async fn apply_ospf_instance(
+    device: &MikrotikDevice,
+    op: crate::diff::SingletonOp<DesiredOspfInstance>,
+) -> anyhow::Result<()> {
     use crate::diff::SingletonOp;
     match op {
         SingletonOp::NoOp => Ok(()),
@@ -500,7 +620,15 @@ pub async fn apply_ospf_instance(device: &MikrotikDevice, op: crate::diff::Singl
         )
         .await
         .map(|_| ()),
-        SingletonOp::Update(id, d) => set(device, OSPF_INSTANCE_PATH, &id, &[("router-id", Some(&d.router_id.to_string()))]).await,
+        SingletonOp::Update(id, d) => {
+            set(
+                device,
+                OSPF_INSTANCE_PATH,
+                &id,
+                &[("router-id", Some(&d.router_id.to_string()))],
+            )
+            .await
+        }
     }
 }
 
@@ -508,7 +636,10 @@ pub async fn apply_ospf_instance(device: &MikrotikDevice, op: crate::diff::Singl
 
 const OSPF_AREA_PATH: &str = "/routing/ospf/area";
 
-pub async fn read_ospf_area(device: &MikrotikDevice, name: &str) -> anyhow::Result<Option<(String, DesiredOspfArea)>> {
+pub async fn read_ospf_area(
+    device: &MikrotikDevice,
+    name: &str,
+) -> anyhow::Result<Option<(String, DesiredOspfArea)>> {
     let rows = print(device, OSPF_AREA_PATH).await?;
     for row in &rows {
         let id = get_id(row)?;
@@ -527,7 +658,10 @@ pub async fn read_ospf_area(device: &MikrotikDevice, name: &str) -> anyhow::Resu
     Ok(None)
 }
 
-pub async fn apply_ospf_area(device: &MikrotikDevice, op: crate::diff::SingletonOp<DesiredOspfArea>) -> anyhow::Result<()> {
+pub async fn apply_ospf_area(
+    device: &MikrotikDevice,
+    op: crate::diff::SingletonOp<DesiredOspfArea>,
+) -> anyhow::Result<()> {
     use crate::diff::SingletonOp;
     match op {
         SingletonOp::NoOp => Ok(()),
@@ -542,7 +676,15 @@ pub async fn apply_ospf_area(device: &MikrotikDevice, op: crate::diff::Singleton
         )
         .await
         .map(|_| ()),
-        SingletonOp::Update(id, d) => set(device, OSPF_AREA_PATH, &id, &[("instance", Some(d.instance.as_str()))]).await,
+        SingletonOp::Update(id, d) => {
+            set(
+                device,
+                OSPF_AREA_PATH,
+                &id,
+                &[("instance", Some(d.instance.as_str()))],
+            )
+            .await
+        }
     }
 }
 
@@ -565,13 +707,25 @@ fn parse_ospf_template(row: &Row) -> anyhow::Result<CurrentOspfInterfaceTemplate
     })
 }
 
-pub async fn read_ospf_interface_templates(device: &MikrotikDevice) -> anyhow::Result<Vec<CurrentOspfInterfaceTemplate>> {
-    print(device, OSPF_TEMPLATE_PATH).await?.iter().map(parse_ospf_template).collect()
+pub async fn read_ospf_interface_templates(
+    device: &MikrotikDevice,
+) -> anyhow::Result<Vec<CurrentOspfInterfaceTemplate>> {
+    print(device, OSPF_TEMPLATE_PATH)
+        .await?
+        .iter()
+        .map(parse_ospf_template)
+        .collect()
 }
 
-pub async fn apply_ospf_interface_templates(device: &MikrotikDevice, plan: &Plan<DesiredOspfInterfaceTemplate>) -> anyhow::Result<()> {
+pub async fn apply_ospf_interface_templates(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredOspfInterfaceTemplate>,
+) -> anyhow::Result<()> {
     fn attrs(d: &DesiredOspfInterfaceTemplate) -> Vec<(&str, Option<&str>)> {
-        let mut a = vec![("interfaces", Some(d.interfaces.as_str())), ("area", Some(d.area.as_str()))];
+        let mut a = vec![
+            ("interfaces", Some(d.interfaces.as_str())),
+            ("area", Some(d.area.as_str())),
+        ];
         if let Some(t) = &d.type_ {
             a.push(("type", Some(t.as_str())));
         }
@@ -625,7 +779,10 @@ fn parse_address_list_entry(row: &Row) -> anyhow::Result<CurrentAddressListEntry
     })
 }
 
-pub async fn read_bgp_networks(device: &MikrotikDevice, list: &str) -> anyhow::Result<Vec<CurrentAddressListEntry>> {
+pub async fn read_bgp_networks(
+    device: &MikrotikDevice,
+    list: &str,
+) -> anyhow::Result<Vec<CurrentAddressListEntry>> {
     let rows = print(device, ADDRESS_LIST_PATH).await?;
     rows.iter()
         .map(parse_address_list_entry)
@@ -633,7 +790,10 @@ pub async fn read_bgp_networks(device: &MikrotikDevice, list: &str) -> anyhow::R
         .collect()
 }
 
-pub async fn apply_bgp_networks(device: &MikrotikDevice, plan: &Plan<DesiredAddressListEntry>) -> anyhow::Result<()> {
+pub async fn apply_bgp_networks(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredAddressListEntry>,
+) -> anyhow::Result<()> {
     for d in &plan.add {
         add(
             device,
@@ -647,7 +807,13 @@ pub async fn apply_bgp_networks(device: &MikrotikDevice, plan: &Plan<DesiredAddr
         .await?;
     }
     for (id, d) in &plan.update {
-        set(device, ADDRESS_LIST_PATH, id, &[("disabled", Some(if d.disabled { "yes" } else { "no" }))]).await?;
+        set(
+            device,
+            ADDRESS_LIST_PATH,
+            id,
+            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+        )
+        .await?;
     }
     for id in &plan.remove {
         remove(device, ADDRESS_LIST_PATH, id).await?;
@@ -659,7 +825,10 @@ pub async fn apply_bgp_networks(device: &MikrotikDevice, plan: &Plan<DesiredAddr
 
 const BGP_INSTANCE_PATH: &str = "/routing/bgp/instance";
 
-pub async fn read_bgp_instance(device: &MikrotikDevice, name: &str) -> anyhow::Result<Option<(String, crate::diff::DesiredBgpInstance)>> {
+pub async fn read_bgp_instance(
+    device: &MikrotikDevice,
+    name: &str,
+) -> anyhow::Result<Option<(String, crate::diff::DesiredBgpInstance)>> {
     let rows = print(device, BGP_INSTANCE_PATH).await?;
     for row in &rows {
         let id = get_id(row)?;
@@ -669,7 +838,10 @@ pub async fn read_bgp_instance(device: &MikrotikDevice, name: &str) -> anyhow::R
                 crate::diff::DesiredBgpInstance {
                     name: name.to_string(),
                     as_number: get(row, "as").unwrap_or("0").parse().unwrap_or(0),
-                    router_id: get(row, "router-id").unwrap_or_default().parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+                    router_id: get(row, "router-id")
+                        .unwrap_or_default()
+                        .parse()
+                        .unwrap_or(Ipv4Addr::UNSPECIFIED),
                     routing_table: get(row, "routing-table").unwrap_or_default().to_string(),
                     disabled: get_bool_flag(row, "disabled"),
                 },
@@ -679,7 +851,10 @@ pub async fn read_bgp_instance(device: &MikrotikDevice, name: &str) -> anyhow::R
     Ok(None)
 }
 
-pub async fn apply_bgp_instance(device: &MikrotikDevice, op: crate::diff::SingletonOp<crate::diff::DesiredBgpInstance>) -> anyhow::Result<()> {
+pub async fn apply_bgp_instance(
+    device: &MikrotikDevice,
+    op: crate::diff::SingletonOp<crate::diff::DesiredBgpInstance>,
+) -> anyhow::Result<()> {
     use crate::diff::SingletonOp;
     match op {
         SingletonOp::NoOp => Ok(()),
@@ -700,7 +875,10 @@ pub async fn apply_bgp_instance(device: &MikrotikDevice, op: crate::diff::Single
                 device,
                 BGP_INSTANCE_PATH,
                 &id,
-                &[("as", Some(&d.as_number.to_string())), ("router-id", Some(&d.router_id.to_string()))],
+                &[
+                    ("as", Some(&d.as_number.to_string())),
+                    ("router-id", Some(&d.router_id.to_string())),
+                ],
             )
             .await
         }
@@ -716,20 +894,35 @@ fn parse_bgp_connection(row: &Row) -> anyhow::Result<CurrentBgpConnection> {
     Ok(CurrentBgpConnection {
         name: get_required(row, "name", &id)?.to_string(),
         instance: get(row, "instance").unwrap_or_default().to_string(),
-        local_address: get(row, "local.address").unwrap_or_default().parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+        local_address: get(row, "local.address")
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(Ipv4Addr::UNSPECIFIED),
         local_role: get(row, "local.role").unwrap_or_default().to_string(),
-        remote_address: get(row, "remote.address").unwrap_or_default().parse().unwrap_or(Ipv4Addr::UNSPECIFIED),
+        remote_address: get(row, "remote.address")
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(Ipv4Addr::UNSPECIFIED),
         output_network: get(row, "output.network").unwrap_or_default().to_string(),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
 }
 
-pub async fn read_bgp_connections(device: &MikrotikDevice) -> anyhow::Result<Vec<CurrentBgpConnection>> {
-    print(device, BGP_CONNECTION_PATH).await?.iter().map(parse_bgp_connection).collect()
+pub async fn read_bgp_connections(
+    device: &MikrotikDevice,
+) -> anyhow::Result<Vec<CurrentBgpConnection>> {
+    print(device, BGP_CONNECTION_PATH)
+        .await?
+        .iter()
+        .map(parse_bgp_connection)
+        .collect()
 }
 
-pub async fn apply_bgp_connections(device: &MikrotikDevice, plan: &Plan<DesiredBgpConnection>) -> anyhow::Result<()> {
+pub async fn apply_bgp_connections(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredBgpConnection>,
+) -> anyhow::Result<()> {
     fn attrs(d: &DesiredBgpConnection) -> Vec<(&str, Option<&str>)> {
         vec![
             ("name", Some(d.name.as_str())),
@@ -754,7 +947,10 @@ pub async fn apply_bgp_connections(device: &MikrotikDevice, plan: &Plan<DesiredB
             device,
             BGP_CONNECTION_PATH,
             id,
-            &[("local.address", Some(&local_s)), ("remote.address", Some(&remote_s))],
+            &[
+                ("local.address", Some(&local_s)),
+                ("remote.address", Some(&remote_s)),
+            ],
         )
         .await?;
     }
@@ -769,7 +965,10 @@ mod tests {
     use super::*;
 
     fn row(pairs: &[(&str, &str)]) -> Row {
-        pairs.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Some(v.to_string())))
+            .collect()
     }
 
     #[test]
@@ -808,7 +1007,10 @@ mod tests {
 
     #[test]
     fn address_to_network_normalizes_host_address_to_network_base() {
-        assert_eq!(address_to_network("192.168.88.5/24").unwrap(), "192.168.88.0/24");
+        assert_eq!(
+            address_to_network("192.168.88.5/24").unwrap(),
+            "192.168.88.0/24"
+        );
         assert_eq!(address_to_network("10.0.0.1/32").unwrap(), "10.0.0.1/32");
     }
 
@@ -819,7 +1021,11 @@ mod tests {
 
     #[test]
     fn ospf_template_passive_raw_is_none_when_flag_absent() {
-        let r = row(&[(".id", "*1"), ("interfaces", "mesh-fra"), ("area", "backbone")]);
+        let r = row(&[
+            (".id", "*1"),
+            ("interfaces", "mesh-fra"),
+            ("area", "backbone"),
+        ]);
         let t = parse_ospf_template(&r).unwrap();
         assert_eq!(t.passive_raw, None);
     }

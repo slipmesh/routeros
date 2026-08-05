@@ -52,6 +52,21 @@ fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
         .transpose()
 }
 
+/// RouterOS echoes `persistent-keepalive` back with a trailing time-unit suffix (e.g. `"25s"`),
+/// even though a bare integer (interpreted as seconds) is accepted when *setting* it - confirmed
+/// against a real device (see AGENTS.md's note that this attribute's exact wire shape wasn't
+/// independently verified before). `hello-interval`/`dead-interval` are stored as raw strings
+/// elsewhere and don't need this - only this field is modeled as a plain `u16` seconds count.
+fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
+    get(row, key)
+        .map(|v| {
+            v.trim_end_matches('s').parse::<u16>().map_err(|e| {
+                anyhow::anyhow!("field {key:?} = {v:?} is not a keepalive duration: {e}")
+            })
+        })
+        .transpose()
+}
+
 /// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
 /// never `tls_insecure()`, see AGENTS.md. Panics only via `expect` on a missing crypto provider,
 /// matching `mikrotik-rs`'s own documented requirement that the application install one before
@@ -236,7 +251,7 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
         allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
         endpoint_address: get(row, "endpoint-address").map(str::to_string),
         endpoint_port: get_opt_u16(row, "endpoint-port")?,
-        persistent_keepalive: get_opt_u16(row, "persistent-keepalive")?,
+        persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?,
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -969,6 +984,33 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), Some(v.to_string())))
             .collect()
+    }
+
+    #[test]
+    fn keepalive_seconds_strips_the_time_unit_suffix() {
+        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25s")]);
+        assert_eq!(
+            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
+            Some(25)
+        );
+    }
+
+    #[test]
+    fn keepalive_seconds_accepts_a_bare_number_too() {
+        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25")]);
+        assert_eq!(
+            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
+            Some(25)
+        );
+    }
+
+    #[test]
+    fn keepalive_seconds_absent_is_none() {
+        let r = row(&[(".id", "*1")]);
+        assert_eq!(
+            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
+            None
+        );
     }
 
     #[test]

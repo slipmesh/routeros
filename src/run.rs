@@ -218,7 +218,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .await
         .context("failed to list RouterConfig")?
         .items;
-    let bgp_as = slipmesh_core::router_types::bgp_as_from_configs(&router_configs)?;
+    let bgp_as = slipmesh_core::router_types::router_config_from_configs(&router_configs)?.bgp_as;
 
     let torn_down =
         teardown_pending_links(&mesh_links_api, &mesh_pools_api, &mesh_links, &cli.node).await?;

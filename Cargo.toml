@@ -12,7 +12,7 @@ repository = "https://github.com/slipmesh/routeros"
 
 [dependencies]
 # Pinned to a specific rev, not a branch - reproducible builds, bumped deliberately (see AGENTS.md).
-slipmesh-core = { git = "https://github.com/slipmesh/core", rev = "dd6673c74ae6c1d3eed71671c3789871300f8199" }
+slipmesh-core = { git = "https://github.com/slipmesh/core", rev = "bce93491ee0ad1f944221ed29815fe4aab84a9b6" }
 
 mikrotik-rs = { version = "0.8.0", features = ["tokio-tls"] }
 

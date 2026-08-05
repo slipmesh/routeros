@@ -31,6 +31,13 @@ impl<D> Plan<D> {
     }
 }
 
+/// Implemented by every `Current*` row type - lets `converge.rs` look up the full row behind a
+/// bare RouterOS `.id` in `Plan::remove` for readable `--diff` output (`- table: <row>`, not the
+/// opaque `- table (*C)` a raw id alone gives you).
+pub trait HasId {
+    fn id(&self) -> &str;
+}
+
 /// Generic keyed reconcile: every `current` row whose key isn't in `desired` is removed; every
 /// `desired` row whose key isn't in `current` is added; a key present in both is updated only if
 /// `unchanged` says the fields actually differ. See the module doc comment for the exclusive-vs-
@@ -136,6 +143,12 @@ pub struct CurrentWireguardInterface {
     pub disabled: bool,
 }
 
+impl HasId for CurrentWireguardInterface {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 pub fn wireguard_interfaces(
     current: &[CurrentWireguardInterface],
     desired: &[DesiredWireguardInterface],
@@ -181,6 +194,12 @@ pub struct CurrentWireguardPeer {
     pub disabled: bool,
 }
 
+impl HasId for CurrentWireguardPeer {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 pub fn wireguard_peers(
     current: &[CurrentWireguardPeer],
     desired: &[DesiredWireguardPeer],
@@ -219,6 +238,12 @@ pub struct CurrentIpAddress {
     pub disabled: bool,
 }
 
+impl HasId for CurrentIpAddress {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 /// Staleness is judged by the (interface, address) **pair**, not the address alone - a link can
 /// keep its address but move interface (or vice versa). `current` must already be pre-filtered by
 /// the caller to this tool's own footprint (see the module doc comment).
@@ -251,6 +276,12 @@ pub struct CurrentListMember {
     pub list: String,
     pub interface: String,
     pub disabled: bool,
+}
+
+impl HasId for CurrentListMember {
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// `current` must already be pre-filtered via [`is_our_list_member_footprint`] (see the module
@@ -302,6 +333,12 @@ pub struct CurrentOspfInterfaceTemplate {
     pub disabled: bool,
 }
 
+impl HasId for CurrentOspfInterfaceTemplate {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 pub fn ospf_interface_templates(
     current: &[CurrentOspfInterfaceTemplate],
     desired: &[DesiredOspfInterfaceTemplate],
@@ -339,6 +376,12 @@ pub struct CurrentAddressListEntry {
     pub list: String,
     pub address: String,
     pub disabled: bool,
+}
+
+impl HasId for CurrentAddressListEntry {
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// `current` must already be pre-filtered by the caller to `list == "bgp-networks"` (see the
@@ -421,6 +464,12 @@ pub struct CurrentBgpConnection {
     pub remote_address: Ipv4Addr,
     pub output_network: String,
     pub disabled: bool,
+}
+
+impl HasId for CurrentBgpConnection {
+    fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 pub fn bgp_connections(

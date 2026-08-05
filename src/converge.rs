@@ -34,7 +34,16 @@ pub struct ConvergeReport {
 }
 
 impl ConvergeReport {
-    fn record<D: std::fmt::Debug>(&mut self, table: &str, plan: &Plan<D>) {
+    /// `current` is the same slice the caller just diffed against - used to resolve a `Plan::
+    /// remove` id back to the actual row being removed, so `- table (*C)` in `--diff` output
+    /// becomes `- table: CurrentWireguardInterface { name: "mesh-node-g", ... }` instead of an
+    /// opaque RouterOS internal id nobody can act on without a separate device query.
+    fn record<C: crate::diff::HasId + std::fmt::Debug, D: std::fmt::Debug>(
+        &mut self,
+        table: &str,
+        current: &[C],
+        plan: &Plan<D>,
+    ) {
         self.added += plan.add.len();
         self.updated += plan.update.len();
         self.removed += plan.remove.len();
@@ -45,7 +54,10 @@ impl ConvergeReport {
             self.diff_lines.push(format!("~ {table} ({id}): {d:?}"));
         }
         for id in &plan.remove {
-            self.diff_lines.push(format!("- {table} ({id})"));
+            match current.iter().find(|c| c.id() == id) {
+                Some(c) => self.diff_lines.push(format!("- {table}: {c:?}")),
+                None => self.diff_lines.push(format!("- {table} ({id})")),
+            }
         }
     }
 
@@ -107,7 +119,11 @@ pub async fn run(
         .collect();
     let current_list_members = mikrotik::read_list_members(device, &desired_ifaces).await?;
     let list_member_plan = crate::diff::list_members(&current_list_members, &desired.list_members);
-    report.record("interface list member", &list_member_plan);
+    report.record(
+        "interface list member",
+        &current_list_members,
+        &list_member_plan,
+    );
     let remove_only = only_remove(&list_member_plan);
     if apply && !remove_only.is_empty() {
         mikrotik::apply_list_members(device, &remove_only).await?;
@@ -116,7 +132,7 @@ pub async fn run(
     // 2. interface wireguard (exclusive).
     let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
     let wg_plan = crate::diff::wireguard_interfaces(&current_wg, &desired.wireguard_interfaces);
-    report.record("interface wireguard", &wg_plan);
+    report.record("interface wireguard", &current_wg, &wg_plan);
     if apply && !wg_plan.is_empty() {
         mikrotik::apply_wireguard_interfaces(device, &wg_plan).await?;
     }
@@ -136,7 +152,7 @@ pub async fn run(
     our_ifaces.push(desired.loopback_bridge.name.clone());
     let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
     let addr_plan = crate::diff::ip_addresses(&current_addrs, &desired.ip_addresses);
-    report.record("ip address", &addr_plan);
+    report.record("ip address", &current_addrs, &addr_plan);
     if apply && !addr_plan.is_empty() {
         mikrotik::apply_ip_addresses(device, &addr_plan).await?;
     }
@@ -144,7 +160,7 @@ pub async fn run(
     // 5. interface wireguard peers (exclusive).
     let current_peers = mikrotik::read_wireguard_peers(device).await?;
     let peers_plan = crate::diff::wireguard_peers(&current_peers, &desired.wireguard_peers);
-    report.record("interface wireguard peers", &peers_plan);
+    report.record("interface wireguard peers", &current_peers, &peers_plan);
     if apply && !peers_plan.is_empty() {
         mikrotik::apply_wireguard_peers(device, &peers_plan).await?;
     }
@@ -190,7 +206,11 @@ pub async fn run(
         &current_templates,
         &desired.ospf_interface_templates,
     );
-    report.record("routing ospf interface-template", &template_plan);
+    report.record(
+        "routing ospf interface-template",
+        &current_templates,
+        &template_plan,
+    );
     if apply && !template_plan.is_empty() {
         mikrotik::apply_ospf_interface_templates(device, &template_plan).await?;
     }
@@ -198,7 +218,11 @@ pub async fn run(
     // 11. ip firewall address-list (bgp-networks).
     let current_networks = mikrotik::read_bgp_networks(device, config::BGP_NETWORKS_LIST).await?;
     let networks_plan = crate::diff::bgp_networks(&current_networks, &desired.bgp_networks);
-    report.record("ip firewall address-list", &networks_plan);
+    report.record(
+        "ip firewall address-list",
+        &current_networks,
+        &networks_plan,
+    );
     if apply && !networks_plan.is_empty() {
         mikrotik::apply_bgp_networks(device, &networks_plan).await?;
     }
@@ -218,7 +242,11 @@ pub async fn run(
     let current_connections = mikrotik::read_bgp_connections(device).await?;
     let connections_plan =
         crate::diff::bgp_connections(&current_connections, &desired.bgp_connections);
-    report.record("routing bgp connection", &connections_plan);
+    report.record(
+        "routing bgp connection",
+        &current_connections,
+        &connections_plan,
+    );
     if apply && !connections_plan.is_empty() {
         mikrotik::apply_bgp_connections(device, &connections_plan).await?;
     }

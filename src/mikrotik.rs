@@ -340,7 +340,13 @@ pub async fn read_ip_addresses(
     rows.iter()
         .map(parse_ip_address)
         .filter(|r| match r {
-            Ok(a) => our_interfaces.iter().any(|i| i == &a.interface),
+            // `is_our_interface_name` additionally catches an address orphaned on a raw internal
+            // id (`*16`) left behind after this tool deleted the `mesh-*` interface it was on -
+            // without this, such a row is invisible to diff::ip_addresses and never cleaned up.
+            Ok(a) => {
+                our_interfaces.iter().any(|i| i == &a.interface)
+                    || crate::diff::is_our_interface_name(&a.interface)
+            }
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
         .collect()
@@ -388,7 +394,10 @@ pub async fn read_physically_connected_prefixes(
     let mut prefixes = Vec::new();
     for row in &rows {
         let a = parse_ip_address(row)?;
-        if a.interface.starts_with("mesh-") || a.interface == loopback_bridge {
+        // Same recognizer as read_ip_addresses: excludes both live mesh-* interfaces and an
+        // address orphaned on a deleted one's raw internal id - neither is a real physically-
+        // connected LAN prefix worth announcing.
+        if crate::diff::is_our_interface_name(&a.interface) || a.interface == loopback_bridge {
             continue;
         }
         match address_to_network(&a.address) {

@@ -114,7 +114,13 @@ pub fn is_our_list_member_footprint(interface: &str, desired_interfaces: &[Strin
     desired_interfaces.iter().any(|d| d == interface) || is_our_interface_name(interface)
 }
 
-fn is_our_interface_name(interface: &str) -> bool {
+/// Whether `interface` is (or, via a raw orphaned id, once was) a `mesh-*` interface this tool
+/// itself creates - shared by `mikrotik.rs`'s `read_list_members` (via
+/// [`is_our_list_member_footprint`]), `read_ip_addresses` (recognizing an `ip address` row left
+/// behind on a deleted `mesh-*` interface's now-unresolvable raw id, so it gets cleaned up instead
+/// of silently ignored), and `read_physically_connected_prefixes` (excluding the same orphaned
+/// rows from what would otherwise look like a real physically-connected LAN prefix).
+pub fn is_our_interface_name(interface: &str) -> bool {
     interface.starts_with("mesh-") || is_raw_orphan_id(interface)
 }
 
@@ -350,11 +356,21 @@ pub fn ospf_interface_templates(
         |d| d.interfaces.clone(),
         |c| c.id.clone(),
         |c, d| {
+            // A `None` in `desired` means "we don't set this field, let RouterOS use its own
+            // default" (only true for the passive loopback entry - every peer entry always sets
+            // all four) - RouterOS's `/print` still echoes back its resolved default value (e.g.
+            // `type=broadcast, cost=1`) even though nothing configured it, so comparing `None !=
+            // Some(_)` directly would flag a phantom "update" on every single run. Confirmed
+            // against a real device - see AGENTS.md.
             c.area == d.area
-                && c.type_ == d.type_
-                && c.cost == d.cost
-                && c.hello_interval == d.hello_interval
-                && c.dead_interval == d.dead_interval
+                && d.type_.as_ref().is_none_or(|t| c.type_.as_ref() == Some(t))
+                && d.cost.is_none_or(|v| c.cost == Some(v))
+                && d.hello_interval
+                    .as_ref()
+                    .is_none_or(|v| c.hello_interval.as_ref() == Some(v))
+                && d.dead_interval
+                    .as_ref()
+                    .is_none_or(|v| c.dead_interval.as_ref() == Some(v))
                 && c.disabled == d.disabled
                 && passive_flag_is_true(c.passive_raw.as_deref()) == d.passive
         },
@@ -874,6 +890,48 @@ mod ospf_interface_templates_tests {
         }];
         let des = vec![loopback_desired("router-lo")];
         assert!(ospf_interface_templates(&cur, &des).is_empty());
+    }
+
+    #[test]
+    fn routeros_default_values_for_unset_optional_fields_are_a_noop() {
+        // Confirmed against a real device: RouterOS echoes back its own resolved defaults
+        // (type=broadcast, cost=1, hello/dead-interval=10s/40s) for the loopback entry even
+        // though desired leaves all four unset (None) - must not be flagged as a phantom update
+        // on every single run.
+        let cur = vec![CurrentOspfInterfaceTemplate {
+            id: "*1".to_string(),
+            interfaces: "router-lo".to_string(),
+            area: "backbone".to_string(),
+            type_: Some("broadcast".to_string()),
+            cost: Some(1),
+            hello_interval: Some("10s".to_string()),
+            dead_interval: Some("40s".to_string()),
+            passive_raw: Some(String::new()),
+            disabled: false,
+        }];
+        let des = vec![loopback_desired("router-lo")];
+        assert!(ospf_interface_templates(&cur, &des).is_empty());
+    }
+
+    #[test]
+    fn peer_entries_still_require_an_exact_match_on_all_four_fields() {
+        // The "None means don't care" relaxation only ever applies to the loopback entry (whose
+        // desired fields are all None) - a peer entry always sets all four, so a real mismatch
+        // there must still be caught.
+        let cur = vec![CurrentOspfInterfaceTemplate {
+            id: "*A".to_string(),
+            interfaces: "mesh-fra".to_string(),
+            area: "backbone".to_string(),
+            type_: Some("ptp".to_string()),
+            cost: Some(20), // desired wants 10
+            hello_interval: Some("10s".to_string()),
+            dead_interval: Some("40s".to_string()),
+            passive_raw: None,
+            disabled: false,
+        }];
+        let des = vec![peer_desired("mesh-fra")];
+        let plan = ospf_interface_templates(&cur, &des);
+        assert_eq!(plan.update.len(), 1);
     }
 
     #[test]

@@ -43,6 +43,19 @@ fn get_bool_flag(row: &Row, key: &str) -> bool {
     crate::diff::passive_flag_is_true(get(row, key))
 }
 
+/// A presence-style RouterOS flag (e.g. `passive` on `routing ospf interface-template`) round-
+/// trips through the API as **key presence**, not a meaningful value - confirmed against a real
+/// device: a passive row has the `passive` key present (with an empty/`None` inner value), a
+/// non-passive row omits the key entirely (`row.get("passive")` and a plain `get()` can't tell
+/// "present with an empty value" apart from "absent", since both collapse to `None` - this checks
+/// `contains_key` instead). Normalizes to the `Some("")`/`None` shape [`crate::diff::
+/// passive_flag_is_true`] already expects. Unlike `passive`, `disabled` is *not* this style - it's
+/// always present with an explicit `"true"`/`"false"` string value, which [`get_bool_flag`]
+/// already handles correctly.
+fn get_flag_presence(row: &Row, key: &str) -> Option<String> {
+    row.contains_key(key).then(String::new)
+}
+
 fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
     get(row, key)
         .map(|v| {
@@ -725,7 +738,7 @@ fn parse_ospf_template(row: &Row) -> anyhow::Result<CurrentOspfInterfaceTemplate
         cost: get_opt_u16(row, "cost")?,
         hello_interval: get(row, "hello-interval").map(str::to_string),
         dead_interval: get(row, "dead-interval").map(str::to_string),
-        passive_raw: row.get("passive").cloned().flatten(),
+        passive_raw: get_flag_presence(row, "passive"),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -734,11 +747,8 @@ fn parse_ospf_template(row: &Row) -> anyhow::Result<CurrentOspfInterfaceTemplate
 pub async fn read_ospf_interface_templates(
     device: &MikrotikDevice,
 ) -> anyhow::Result<Vec<CurrentOspfInterfaceTemplate>> {
-    print(device, OSPF_TEMPLATE_PATH)
-        .await?
-        .iter()
-        .map(parse_ospf_template)
-        .collect()
+    let rows = print(device, OSPF_TEMPLATE_PATH).await?;
+    rows.iter().map(parse_ospf_template).collect()
 }
 
 pub async fn apply_ospf_interface_templates(
@@ -1079,5 +1089,21 @@ mod tests {
         ]);
         let t = parse_ospf_template(&r).unwrap();
         assert_eq!(t.passive_raw, None);
+    }
+
+    #[test]
+    fn ospf_template_passive_raw_is_some_when_key_present_with_no_value() {
+        // The exact wire shape confirmed against a real device: a passive row has the `passive`
+        // key present with an empty/`None` inner value (`=passive=`), not a `"true"` string - a
+        // plain `row.get("passive")` can't tell that apart from the key being absent entirely,
+        // which is exactly the bug this regression test catches (see AGENTS.md/commit history).
+        let mut r = row(&[
+            (".id", "*1"),
+            ("interfaces", "router-lo"),
+            ("area", "backbone"),
+        ]);
+        r.insert("passive".to_string(), None);
+        let t = parse_ospf_template(&r).unwrap();
+        assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
     }
 }

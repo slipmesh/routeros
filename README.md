@@ -5,8 +5,8 @@ mesh's desired state: WireGuard mesh tunnels plus OSPF/iBGP dynamic routing, com
 `slipmesh.net` Kubernetes CRDs the [`slipmesh-operators`](https://github.com/ffaxl/slipmesh-operators)
 `mesh`/`router` operators use for Linux nodes.
 
-RouterOS is treated as a full mesh/router node (allocation, uniqueness checks, finalizers - the
-same lifecycle a Linux node's operator pod goes through), just applied by this tool over RouterOS's
+RouterOS is treated as a full mesh/router node (uniqueness checks, finalizers - the same lifecycle
+a Linux node's operator pod goes through), just applied by this tool over RouterOS's
 native binary API ([`mikrotik-rs`](https://github.com/ferrohd/mikrotik-rs)) instead of a live
 in-cluster reconcile loop. It is **not** a Kubernetes operator: it runs like `ansible-playbook` -
 invoke it manually, from cron, or a systemd timer - reads what it needs from the cluster once,
@@ -18,8 +18,8 @@ connects to the router once, converges, and exits.
 routeros --node=hq [--check] [--diff]
 ```
 
-- `--node` - name of the `MeshNode`/`RouterNode` pair identifying this physical router. Both must
-  already exist (a human/GitOps creates them ahead of time); missing either is a fatal error.
+- `--node` - name of the `NodeConfig` identifying this physical router. It must already exist (a
+  human/GitOps creates it ahead of time); missing it is a fatal error.
 - `--check` - compute the diff but don't apply it to the device.
 - `--diff` - print the computed add/update/remove plan to stdout (works with or without `--check`).
 

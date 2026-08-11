@@ -13,15 +13,15 @@
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
-    CurrentAddressListEntry, CurrentBgpConnection, CurrentIpAddress, CurrentListMember,
-    CurrentOspfInterfaceTemplate, CurrentWireguardInterface, CurrentWireguardPeer,
-    DesiredAddressListEntry, DesiredBgpConnection, DesiredBridge, DesiredFilterRule,
-    DesiredIpAddress, DesiredListMember, DesiredOspfArea, DesiredOspfInstance,
+    CurrentAddressListEntry, CurrentBgpConnection, CurrentIpAddress, CurrentIpv6Address,
+    CurrentListMember, CurrentOspfInterfaceTemplate, CurrentWireguardInterface,
+    CurrentWireguardPeer, DesiredAddressListEntry, DesiredBgpConnection, DesiredBridge,
+    DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea, DesiredOspfInstance,
     DesiredOspfInterfaceTemplate, DesiredWireguardInterface, DesiredWireguardPeer, Plan,
 };
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 type Row = HashMap<String, Option<String>>;
 
@@ -213,10 +213,20 @@ pub async fn read_wireguard_interfaces(
         .collect()
 }
 
+/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g. a
+/// mesh-* interface renamed to the OSPFv3/RFC 8950 migration's `short_id`-based naming) is a
+/// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
+/// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
+/// with a "Listen port already used" comment - confirmed on a real device (`hq`) during the
+/// migration's live rollout, where every renamed link hit this. Removing first frees the port
+/// before anything tries to claim it again.
 pub async fn apply_wireguard_interfaces(
     device: &MikrotikDevice,
     plan: &Plan<DesiredWireguardInterface>,
 ) -> anyhow::Result<()> {
+    for id in &plan.remove {
+        remove(device, WIREGUARD_PATH, id).await?;
+    }
     for d in &plan.add {
         add(
             device,
@@ -242,9 +252,6 @@ pub async fn apply_wireguard_interfaces(
             ],
         )
         .await?;
-    }
-    for id in &plan.remove {
-        remove(device, WIREGUARD_PATH, id).await?;
     }
     Ok(())
 }
@@ -553,59 +560,101 @@ pub async fn apply_loopback_bridge(
     }
 }
 
-// ── routing filter rule (ospf-in, singleton) ──
+// ── ipv6 address ──
 
-const FILTER_RULE_PATH: &str = "/routing/filter/rule";
+const IPV6_ADDRESS_PATH: &str = "/ipv6/address";
 
-pub async fn read_ospf_filter_rule(
-    device: &MikrotikDevice,
-    chain: &str,
-) -> anyhow::Result<Option<(String, DesiredFilterRule)>> {
-    let rows = print(device, FILTER_RULE_PATH).await?;
-    for row in &rows {
-        let id = get_id(row)?;
-        if get(row, "chain") == Some(chain) {
-            return Ok(Some((
-                id,
-                DesiredFilterRule {
-                    chain: chain.to_string(),
-                    rule: get(row, "rule").unwrap_or_default().to_string(),
-                    disabled: get_bool_flag(row, "disabled"),
-                },
-            )));
-        }
-    }
-    Ok(None)
+/// True if `address` (an `"<ip>/<prefix>"` string as stored in an `ipv6 address` row) falls in
+/// `fe80::/10` - RouterOS auto-generates an EUI-64 link-local on *every* interface (including
+/// `mesh-*` ones and `router-lo`, both inside this tool's naming footprint) the moment it comes
+/// up, entirely on its own, never something `routeros` created (`v2-v3.md` ловушка №2 - see
+/// `AGENTS.md`'s OSPFv3/RFC 8950 section). Without this exclusion, `read_ipv6_addresses`'s
+/// interface-name-based footprint match would wrongly treat every such auto-generated address as
+/// "ours but no longer desired" and propose deleting it on every single run - found via a real
+/// `--check --diff` against `hq`, breaking OSPFv3 neighbor formation (RouterOS's own link-local is
+/// what the OSPFv3 hello packets actually use).
+fn is_link_local_ipv6(address: &str) -> bool {
+    address
+        .split('/')
+        .next()
+        .and_then(|ip| ip.parse::<Ipv6Addr>().ok())
+        .is_some_and(|addr| addr.segments()[0] & 0xffc0 == 0xfe80)
 }
 
-pub async fn apply_ospf_filter_rule(
+fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
+    let id = get_id(row)?;
+    Ok(CurrentIpv6Address {
+        address: get_required(row, "address", &id)?.to_string(),
+        interface: get_required(row, "interface", &id)?.to_string(),
+        // Assumed boolean-flag-shaped exactly like `disabled` (explicit "true"/"false" on read,
+        // "yes"/"no" accepted on write) - not independently confirmed against a real device in
+        // this session, same caveat as this module's other unverified property names (see the
+        // module doc comment).
+        advertise: get_bool_flag(row, "advertise"),
+        disabled: get_bool_flag(row, "disabled"),
+        id,
+    })
+}
+
+/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (the loopback bridge
+/// only - mesh-* interfaces get no static IPv6, RouterOS generates their link-local on its own) -
+/// see `diff::ipv6_addresses`'s doc comment on why an unfiltered read must never reach that
+/// function. `fe80::/10` rows are dropped unconditionally first, before the footprint match - see
+/// `is_link_local_ipv6`'s doc comment.
+pub async fn read_ipv6_addresses(
     device: &MikrotikDevice,
-    op: crate::diff::SingletonOp<DesiredFilterRule>,
+    our_interfaces: &[String],
+) -> anyhow::Result<Vec<CurrentIpv6Address>> {
+    let rows = print(device, IPV6_ADDRESS_PATH).await?;
+    rows.iter()
+        .map(parse_ipv6_address)
+        .filter(|r| match r {
+            // Link-local rows are excluded unconditionally, before the footprint match - see
+            // is_link_local_ipv6's doc comment. Never something this tool created, regardless of
+            // which interface RouterOS put it on.
+            Ok(a) if is_link_local_ipv6(&a.address) => false,
+            Ok(a) => {
+                our_interfaces.iter().any(|i| i == &a.interface)
+                    || crate::diff::is_our_interface_name(&a.interface)
+            }
+            Err(_) => true, // surface parse errors, don't silently swallow them
+        })
+        .collect()
+}
+
+pub async fn apply_ipv6_addresses(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredIpv6Address>,
 ) -> anyhow::Result<()> {
-    use crate::diff::SingletonOp;
-    match op {
-        SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => add(
+    for d in &plan.add {
+        add(
             device,
-            FILTER_RULE_PATH,
+            IPV6_ADDRESS_PATH,
             &[
-                ("chain", Some(d.chain.as_str())),
-                ("rule", Some(d.rule.as_str())),
+                ("address", Some(d.address.as_str())),
+                ("interface", Some(d.interface.as_str())),
+                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
                 ("disabled", Some(if d.disabled { "yes" } else { "no" })),
             ],
         )
-        .await
-        .map(|_| ()),
-        SingletonOp::Update(id, d) => {
-            set(
-                device,
-                FILTER_RULE_PATH,
-                &id,
-                &[("rule", Some(d.rule.as_str()))],
-            )
-            .await
-        }
+        .await?;
     }
+    for (id, d) in &plan.update {
+        set(
+            device,
+            IPV6_ADDRESS_PATH,
+            id,
+            &[
+                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
+                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+            ],
+        )
+        .await?;
+    }
+    for id in &plan.remove {
+        remove(device, IPV6_ADDRESS_PATH, id).await?;
+    }
+    Ok(())
 }
 
 // ── routing ospf instance (singleton) ──
@@ -624,12 +673,11 @@ pub async fn read_ospf_instance(
                 id,
                 DesiredOspfInstance {
                     name: name.to_string(),
-                    version: get(row, "version").unwrap_or("2").parse().unwrap_or(2),
+                    version: get(row, "version").unwrap_or("3").parse().unwrap_or(3),
                     router_id: get(row, "router-id")
                         .unwrap_or_default()
                         .parse()
                         .unwrap_or(Ipv4Addr::UNSPECIFIED),
-                    in_filter_chain: get(row, "in-filter-chain").unwrap_or_default().to_string(),
                     disabled: get_bool_flag(row, "disabled"),
                 },
             )));
@@ -638,6 +686,13 @@ pub async fn read_ospf_instance(
     Ok(None)
 }
 
+/// `Update` now also sets `version` (not just `router-id`), attempting an in-place `2 -> 3`
+/// transition for a device migrating from the pre-OSPFv3 scheme. Not independently confirmed
+/// against a real device in this session whether RouterOS actually allows changing an OSPF
+/// instance's `version` after creation - if it rejects this, the pre-existing OSPFv2 instance
+/// needs a one-time manual `/routing ospf instance remove [find name=default-v2]` during the
+/// migration window (mirrors `v2-v3.md`'s own explicit manual "disable OSPFv2" step - this table
+/// is a name-owned singleton by design, not something to build automatic detection for).
 pub async fn apply_ospf_instance(
     device: &MikrotikDevice,
     op: crate::diff::SingletonOp<DesiredOspfInstance>,
@@ -652,7 +707,6 @@ pub async fn apply_ospf_instance(
                 ("name", Some(d.name.as_str())),
                 ("version", Some(&d.version.to_string())),
                 ("router-id", Some(&d.router_id.to_string())),
-                ("in-filter-chain", Some(d.in_filter_chain.as_str())),
             ],
         )
         .await
@@ -662,7 +716,10 @@ pub async fn apply_ospf_instance(
                 device,
                 OSPF_INSTANCE_PATH,
                 &id,
-                &[("router-id", Some(&d.router_id.to_string()))],
+                &[
+                    ("version", Some(&d.version.to_string())),
+                    ("router-id", Some(&d.router_id.to_string())),
+                ],
             )
             .await
         }
@@ -931,12 +988,17 @@ fn parse_bgp_connection(row: &Row) -> anyhow::Result<CurrentBgpConnection> {
         local_address: get(row, "local.address")
             .unwrap_or_default()
             .parse()
-            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+            .unwrap_or(Ipv6Addr::UNSPECIFIED),
         local_role: get(row, "local.role").unwrap_or_default().to_string(),
         remote_address: get(row, "remote.address")
             .unwrap_or_default()
             .parse()
-            .unwrap_or(Ipv4Addr::UNSPECIFIED),
+            .unwrap_or(Ipv6Addr::UNSPECIFIED),
+        // `multihop`/`afi` are top-level connection properties, not nested under
+        // `local.`/`remote.`/`output.` - confirmed against v2-v3.md's worked RouterOS config
+        // (§4), not independently confirmed against a live device in this session.
+        multihop: get_bool_flag(row, "multihop"),
+        afi: get(row, "afi").unwrap_or_default().to_string(),
         output_network: get(row, "output.network").unwrap_or_default().to_string(),
         disabled: get_bool_flag(row, "disabled"),
         id,
@@ -962,6 +1024,8 @@ pub async fn apply_bgp_connections(
             ("name", Some(d.name.as_str())),
             ("instance", Some(d.instance.as_str())),
             ("local.role", Some(d.local_role.as_str())),
+            ("multihop", Some(if d.multihop { "yes" } else { "no" })),
+            ("afi", Some(d.afi.as_str())),
             ("output.network", Some(d.output_network.as_str())),
             ("disabled", Some(if d.disabled { "yes" } else { "no" })),
         ]
@@ -975,18 +1039,15 @@ pub async fn apply_bgp_connections(
         add(device, BGP_CONNECTION_PATH, &a).await?;
     }
     for (id, d) in &plan.update {
+        // Full attrs(), not just the address pair: `multihop`/`afi` are now also part of the diff
+        // comparison (see diff::bgp_connections) and must actually be pushed on a real drift, not
+        // silently left stale.
+        let mut a = attrs(d);
         let local_s = d.local_address.to_string();
         let remote_s = d.remote_address.to_string();
-        set(
-            device,
-            BGP_CONNECTION_PATH,
-            id,
-            &[
-                ("local.address", Some(&local_s)),
-                ("remote.address", Some(&remote_s)),
-            ],
-        )
-        .await?;
+        a.push(("local.address", Some(&local_s)));
+        a.push(("remote.address", Some(&remote_s)));
+        set(device, BGP_CONNECTION_PATH, id, &a).await?;
     }
     for id in &plan.remove {
         remove(device, BGP_CONNECTION_PATH, id).await?;
@@ -1105,5 +1166,49 @@ mod tests {
         r.insert("passive".to_string(), None);
         let t = parse_ospf_template(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
+    }
+
+    #[test]
+    fn parses_ipv6_address_row() {
+        let r = row(&[
+            (".id", "*1"),
+            ("address", "fd00::1/128"),
+            ("interface", "router-lo"),
+            ("advertise", "false"),
+        ]);
+        let a = parse_ipv6_address(&r).unwrap();
+        assert_eq!(a.address, "fd00::1/128");
+        assert_eq!(a.interface, "router-lo");
+        assert!(!a.advertise);
+    }
+
+    #[test]
+    fn recognizes_link_local_addresses_regardless_of_prefix_length() {
+        // Real fe80::/10 addresses RouterOS auto-generates via EUI-64 - confirmed against a real
+        // device via --check --diff (see is_link_local_ipv6's doc comment).
+        assert!(is_link_local_ipv6("fe80::bff6:4220:a333:c1d1/64"));
+        assert!(is_link_local_ipv6("fe80::f044:89ff:fe2c:3247/64"));
+        assert!(!is_link_local_ipv6("fd00::1/128"));
+        assert!(!is_link_local_ipv6("fd3d:c741:faa9::a3e:ff/128"));
+    }
+
+    #[test]
+    fn parses_bgp_connection_row_with_ipv6_addresses_and_multihop_afi() {
+        let r = row(&[
+            (".id", "*1"),
+            ("name", "bgp-fra"),
+            ("instance", "default"),
+            ("local.address", "fd00::1"),
+            ("local.role", "ibgp"),
+            ("remote.address", "fd00::2"),
+            ("multihop", "true"),
+            ("afi", "ip"),
+            ("output.network", "bgp-networks"),
+        ]);
+        let c = parse_bgp_connection(&r).unwrap();
+        assert_eq!(c.local_address, "fd00::1".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(c.remote_address, "fd00::2".parse::<Ipv6Addr>().unwrap());
+        assert!(c.multihop);
+        assert_eq!(c.afi, "ip");
     }
 }

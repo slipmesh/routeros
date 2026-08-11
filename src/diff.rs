@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Add/update/remove plan for one RouterOS table. `update`/`remove` carry the RouterOS `.id` of
 /// the row to act on; `add` carries only the desired value (no `.id` exists yet).
@@ -267,6 +267,51 @@ pub fn ip_addresses(
     )
 }
 
+// ── ipv6 address (shared) ──
+
+/// `advertise` mirrors `/ipv6 address add ... advertise=no` on the loopback ULA `/128` -
+/// prevents this address being announced via SLAAC RA on an interface that isn't a real LAN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredIpv6Address {
+    pub address: String,
+    pub interface: String,
+    pub advertise: bool,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentIpv6Address {
+    pub id: String,
+    pub address: String,
+    pub interface: String,
+    pub advertise: bool,
+    pub disabled: bool,
+}
+
+impl HasId for CurrentIpv6Address {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// Same shape/staleness rule as [`ip_addresses`] - `current` must already be pre-filtered by the
+/// caller to this tool's own footprint (see the module doc comment). Only the loopback bridge is
+/// ever in this tool's IPv6-address footprint (mesh-* interfaces get no static IPv6 - RouterOS
+/// generates their link-local on its own, `v2-v3.md` ловушка №2).
+pub fn ipv6_addresses(
+    current: &[CurrentIpv6Address],
+    desired: &[DesiredIpv6Address],
+) -> Plan<DesiredIpv6Address> {
+    diff(
+        current,
+        desired,
+        |c| (c.interface.clone(), c.address.clone()),
+        |d| (d.interface.clone(), d.address.clone()),
+        |c| c.id.clone(),
+        |c, d| c.advertise == d.advertise && c.disabled == d.disabled,
+    )
+}
+
 // ── interface list member (shared) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,7 +461,7 @@ pub fn bgp_networks(
     )
 }
 
-// ── singleton values (interface bridge, filter rule, ospf/bgp instance+area) ──
+// ── singleton values (interface bridge, ospf/bgp instance+area) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBridge {
@@ -425,18 +470,10 @@ pub struct DesiredBridge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesiredFilterRule {
-    pub chain: String,
-    pub rule: String,
-    pub disabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredOspfInstance {
     pub name: String,
     pub version: u8,
     pub router_id: Ipv4Addr,
-    pub in_filter_chain: String,
     pub disabled: bool,
 }
 
@@ -459,13 +496,19 @@ pub struct DesiredBgpInstance {
 
 // ── routing bgp connection (exclusive) ──
 
+/// `local_address`/`remote_address` are IPv6 loopbacks (OSPFv3/RFC 8950 underlay - peers sit
+/// multiple OSPF hops apart, not on a directly-connected link, hence `multihop`). `afi` is
+/// RouterOS 7.20+'s explicit AFI selector - without it, a session negotiates `afi=ipv6` only and
+/// a BIRD peer expecting an RFC 8950 IPv4-over-IPv6 session drops it (`v2-v3.md` ловушка №4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBgpConnection {
     pub name: String,
     pub instance: String,
-    pub local_address: Ipv4Addr,
+    pub local_address: Ipv6Addr,
     pub local_role: String,
-    pub remote_address: Ipv4Addr,
+    pub remote_address: Ipv6Addr,
+    pub multihop: bool,
+    pub afi: String,
     pub output_network: String,
     pub disabled: bool,
 }
@@ -475,9 +518,11 @@ pub struct CurrentBgpConnection {
     pub id: String,
     pub name: String,
     pub instance: String,
-    pub local_address: Ipv4Addr,
+    pub local_address: Ipv6Addr,
     pub local_role: String,
-    pub remote_address: Ipv4Addr,
+    pub remote_address: Ipv6Addr,
+    pub multihop: bool,
+    pub afi: String,
     pub output_network: String,
     pub disabled: bool,
 }
@@ -503,6 +548,8 @@ pub fn bgp_connections(
                 && c.local_address == d.local_address
                 && c.local_role == d.local_role
                 && c.remote_address == d.remote_address
+                && c.multihop == d.multihop
+                && c.afi == d.afi
                 && c.output_network == d.output_network
                 && c.disabled == d.disabled
         },
@@ -1014,26 +1061,30 @@ mod bgp_networks_tests {
 mod bgp_connections_tests {
     use super::*;
 
-    fn desired(name: &str, remote: Ipv4Addr) -> DesiredBgpConnection {
+    fn desired(name: &str, remote: Ipv6Addr) -> DesiredBgpConnection {
         DesiredBgpConnection {
             name: name.to_string(),
             instance: "default".to_string(),
-            local_address: Ipv4Addr::new(10, 62, 0, 1),
+            local_address: "fd00::1".parse().unwrap(),
             local_role: "ibgp".to_string(),
             remote_address: remote,
+            multihop: true,
+            afi: "ip".to_string(),
             output_network: "bgp-networks".to_string(),
             disabled: false,
         }
     }
 
-    fn current(id: &str, name: &str, remote: Ipv4Addr) -> CurrentBgpConnection {
+    fn current(id: &str, name: &str, remote: Ipv6Addr) -> CurrentBgpConnection {
         CurrentBgpConnection {
             id: id.to_string(),
             name: name.to_string(),
             instance: "default".to_string(),
-            local_address: Ipv4Addr::new(10, 62, 0, 1),
+            local_address: "fd00::1".parse().unwrap(),
             local_role: "ibgp".to_string(),
             remote_address: remote,
+            multihop: true,
+            afi: "ip".to_string(),
             output_network: "bgp-networks".to_string(),
             disabled: false,
         }
@@ -1041,22 +1092,84 @@ mod bgp_connections_tests {
 
     #[test]
     fn update_when_remote_address_changes() {
-        let cur = vec![current("*1", "bgp-fra", Ipv4Addr::new(10, 62, 0, 2))];
-        let des = vec![desired("bgp-fra", Ipv4Addr::new(10, 62, 0, 3))];
+        let cur = vec![current("*1", "bgp-fra", "fd00::2".parse().unwrap())];
+        let des = vec![desired("bgp-fra", "fd00::3".parse().unwrap())];
         let plan = bgp_connections(&cur, &des);
         assert_eq!(
             plan.update,
             vec![(
                 "*1".to_string(),
-                desired("bgp-fra", Ipv4Addr::new(10, 62, 0, 3))
+                desired("bgp-fra", "fd00::3".parse().unwrap())
             )]
         );
     }
 
     #[test]
+    fn update_when_multihop_or_afi_changes() {
+        let cur = vec![current("*1", "bgp-fra", "fd00::2".parse().unwrap())];
+        let mut des = desired("bgp-fra", "fd00::2".parse().unwrap());
+        des.multihop = false;
+        let plan = bgp_connections(&cur, &[des.clone()]);
+        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+    }
+
+    #[test]
     fn pure_remove_when_peer_no_longer_desired() {
-        let cur = vec![current("*1", "bgp-gone", Ipv4Addr::new(10, 62, 0, 9))];
+        let cur = vec![current("*1", "bgp-gone", "fd00::9".parse().unwrap())];
         let plan = bgp_connections(&cur, &[]);
         assert_eq!(plan.remove, vec!["*1".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod ipv6_addresses_tests {
+    use super::*;
+
+    fn desired(address: &str, interface: &str) -> DesiredIpv6Address {
+        DesiredIpv6Address {
+            address: address.to_string(),
+            interface: interface.to_string(),
+            advertise: false,
+            disabled: false,
+        }
+    }
+
+    fn current(id: &str, address: &str, interface: &str) -> CurrentIpv6Address {
+        CurrentIpv6Address {
+            id: id.to_string(),
+            address: address.to_string(),
+            interface: interface.to_string(),
+            advertise: false,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn noop_when_matching() {
+        let cur = vec![current("*1", "fd00::1/128", "router-lo")];
+        let des = vec![desired("fd00::1/128", "router-lo")];
+        assert!(ipv6_addresses(&cur, &des).is_empty());
+    }
+
+    #[test]
+    fn pure_add() {
+        let plan = ipv6_addresses(&[], &[desired("fd00::1/128", "router-lo")]);
+        assert_eq!(plan.add, vec![desired("fd00::1/128", "router-lo")]);
+    }
+
+    #[test]
+    fn update_when_advertise_changes() {
+        let cur = vec![current("*1", "fd00::1/128", "router-lo")];
+        let mut des = desired("fd00::1/128", "router-lo");
+        des.advertise = true;
+        let plan = ipv6_addresses(&cur, &[des.clone()]);
+        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+    }
+
+    #[test]
+    fn removes_out_of_footprint_row_given_only_our_own_rows() {
+        let cur = vec![current("*10", "fd00::5/128", "mesh-old")];
+        let plan = ipv6_addresses(&cur, &[]);
+        assert_eq!(plan.remove, vec!["*10".to_string()]);
     }
 }

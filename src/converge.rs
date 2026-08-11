@@ -7,10 +7,11 @@
 //! 1. `interface list member` stale removal (before any interface is deleted).
 //! 2. `interface wireguard` (exclusive).
 //! 3. `interface bridge` (loopback, singleton) - before its own address can be set.
-//! 4. `ip address` (mesh `/31`s + loopback `/32` together - both interface kinds now exist).
-//! 5. `interface wireguard peers` (exclusive).
-//! 6. `interface list member` add/update (after interfaces exist).
-//! 7. `routing filter rule` (singleton).
+//! 4. `ip address` (loopback `/32` - mesh links carry no IPv4 any more, OSPFv3/RFC 8950 underlay).
+//! 5. `ipv6 address` (loopback ULA `/128` - independent of step 4, order between the two doesn't
+//!    matter).
+//! 6. `interface wireguard peers` (exclusive).
+//! 7. `interface list member` add/update (after interfaces exist).
 //! 8. `routing ospf instance` (singleton).
 //! 9. `routing ospf area` (singleton).
 //! 10. `routing ospf interface-template` (exclusive).
@@ -147,7 +148,7 @@ pub async fn run(
     })
     .await?;
 
-    // 4. ip address (mesh /31s + loopback /32 together - both interface kinds now exist).
+    // 4. ip address (loopback /32 - mesh links carry no IPv4 any more).
     let mut our_ifaces = desired_ifaces.clone();
     our_ifaces.push(desired.loopback_bridge.name.clone());
     let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
@@ -157,7 +158,16 @@ pub async fn run(
         mikrotik::apply_ip_addresses(device, &addr_plan).await?;
     }
 
-    // 5. interface wireguard peers (exclusive).
+    // 5. ipv6 address (loopback ULA /128 - mesh-* interfaces get no static IPv6, RouterOS
+    // generates their link-local on its own).
+    let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
+    let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
+    report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);
+    if apply && !v6_addr_plan.is_empty() {
+        mikrotik::apply_ipv6_addresses(device, &v6_addr_plan).await?;
+    }
+
+    // 6. interface wireguard peers (exclusive).
     let current_peers = mikrotik::read_wireguard_peers(device).await?;
     let peers_plan = crate::diff::wireguard_peers(&current_peers, &desired.wireguard_peers);
     report.record("interface wireguard peers", &current_peers, &peers_plan);
@@ -165,23 +175,13 @@ pub async fn run(
         mikrotik::apply_wireguard_peers(device, &peers_plan).await?;
     }
 
-    // 6. interface list member add/update (after interfaces exist; remove already done in step 1).
+    // 7. interface list member add/update (after interfaces exist; remove already done in step 1).
     let add_update_only = only_add_update(&list_member_plan);
     if apply && !add_update_only.is_empty() {
         mikrotik::apply_list_members(device, &add_update_only).await?;
     }
 
-    // 7-9. routing filter rule / ospf instance / ospf area (singletons).
-    let current_filter_rule =
-        mikrotik::read_ospf_filter_rule(device, &desired.ospf_filter_rule.chain).await?;
-    let filter_rule_op =
-        crate::diff::singleton(current_filter_rule, desired.ospf_filter_rule.clone());
-    report.record_singleton("routing filter rule", &filter_rule_op);
-    apply_singleton(filter_rule_op, apply, async |op| {
-        mikrotik::apply_ospf_filter_rule(device, op).await
-    })
-    .await?;
-
+    // 8-9. routing ospf instance / ospf area (singletons).
     let current_ospf_instance =
         mikrotik::read_ospf_instance(device, &desired.ospf_instance.name).await?;
     let ospf_instance_op =

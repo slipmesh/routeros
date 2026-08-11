@@ -1,5 +1,5 @@
-//! The one-shot pipeline: fetch CRD state once, handle finalizers/allocation, connect to the
-//! device once, converge, exit. No `kube::runtime::Controller`, no reflectors/watch, no state
+//! The one-shot pipeline: fetch CRD state once, handle finalizers/collision checks, connect to
+//! the device once, converge, exit. No `kube::runtime::Controller`, no reflectors/watch, no state
 //! carried between invocations - see AGENTS.md.
 
 use crate::allocation;
@@ -12,8 +12,10 @@ use k8s_openapi::api::core::v1::Secret;
 use kube::api::{ListParams, Patch, PatchParams};
 use kube::{Api, Client, Resource, ResourceExt};
 use serde_json::json;
-use slipmesh_core::mesh_types::{MeshLink, MeshNode, MeshPool};
-use slipmesh_core::router_types::{RouterConfig, RouterNode, RouterPool};
+use slipmesh_core::cluster_config_types::{ClusterConfig, cluster_config_from_configs};
+use slipmesh_core::mesh_types::MeshLink;
+use slipmesh_core::node_config_types::NodeConfig;
+use std::net::Ipv6Addr;
 use std::sync::Arc;
 
 /// Hardcoded, not read from `POD_NAMESPACE` - this process runs directly on a host, not as a pod.
@@ -37,7 +39,7 @@ where
 
 /// Finds the single `Secret` labeled `slipmesh.net/node=<node>` in `namespace` - never a fixed
 /// name (see AGENTS.md). Exactly one is expected, same "fail loud, don't guess" contract as
-/// `RouterConfig`.
+/// `ClusterConfig`.
 async fn find_credentials_secret(secrets: &Api<Secret>, node: &str) -> anyhow::Result<Secret> {
     let selector = format!("slipmesh.net/node={node}");
     let mut items = secrets
@@ -54,26 +56,20 @@ async fn find_credentials_secret(secrets: &Api<Secret>, node: &str) -> anyhow::R
 }
 
 /// Tears down every `MeshLink` `--node` is party to that's already marked for deletion and still
-/// carries our finalizer: releases the `MeshPool` slot (only if we were `node_a`) and removes the
-/// finalizer. No explicit device-side interface removal is needed here - excluding these links
-/// from the slice passed to `config::desired_state` this same run means the normal exclusive-
-/// table convergence (`converge::run`, step 2) prunes the now-undesired interface/peer on its own.
+/// carries our finalizer: removes the finalizer. No explicit device-side interface removal is
+/// needed here - excluding these links from the slice passed to `config::desired_state` this same
+/// run means the normal exclusive-table convergence (`converge::run`, step 2) prunes the now-
+/// undesired interface/peer on its own. Unlike before the NodeConfig/ClusterConfig migration,
+/// there's no `MeshPool` slot to release - a link's port is a manual `spec.port` field, not
+/// allocated.
 async fn teardown_pending_links(
     mesh_links_api: &Api<MeshLink>,
-    mesh_pools_api: &Api<MeshPool>,
     links: &[Arc<MeshLink>],
     node: &str,
 ) -> anyhow::Result<Vec<String>> {
     let mut torn_down = Vec::new();
     for link in allocation::links_pending_teardown(links, node) {
         let name = link.name_any();
-        if link.spec.is_lower(node)
-            && let Some(pool_name) = link.status.as_ref().and_then(|s| s.pool.as_deref())
-            && let Err(e) =
-                allocation::release_link_pool_slot(mesh_pools_api, pool_name, &name).await
-        {
-            tracing::warn!(link = %name, pool = pool_name, error = %e, "failed to release MeshPool slot on delete");
-        }
         allocation::remove_finalizer(
             mesh_links_api,
             &name,
@@ -104,67 +100,37 @@ async fn ensure_link_finalizers(
     Ok(())
 }
 
-/// Ensures this device's own loopback is allocated (adding `ROUTER_POOL_FINALIZER` first, exactly
-/// mirroring `router::reconcile::render`'s ordering) and returns it.
-async fn ensure_loopback(
-    router_pools_api: &Api<RouterPool>,
-    router_nodes_api: &Api<RouterNode>,
-    node: &str,
-    router_node: &RouterNode,
-) -> anyhow::Result<std::net::Ipv4Addr> {
-    if !allocation::has_finalizer(router_node.finalizers(), allocation::ROUTER_POOL_FINALIZER) {
-        allocation::add_finalizer(
-            router_nodes_api,
-            node,
-            router_node.finalizers(),
-            allocation::ROUTER_POOL_FINALIZER,
-        )
-        .await?;
-    }
-    if allocation::needs_loopback_allocation(router_node) {
-        allocation::allocate_loopback(router_pools_api, router_nodes_api, node, router_node).await
-    } else {
-        Ok(router_node
-            .status
-            .as_ref()
-            .and_then(|s| s.loopback)
-            .expect("needs_loopback_allocation confirmed status.loopback is populated"))
-    }
-}
-
-/// If `hq`'s own `RouterNode` is itself being decommissioned, release its `RouterPool` slot and
-/// remove `ROUTER_POOL_FINALIZER` - mirrors `router::reconcile::render`'s own deletion-handling
-/// branch. Returns `true` if deletion was handled (caller should stop here, nothing left to
-/// converge this run).
-async fn handle_router_node_deletion(
-    router_pools_api: &Api<RouterPool>,
-    router_nodes_api: &Api<RouterNode>,
-    node: &str,
-    router_node: &RouterNode,
-) -> anyhow::Result<bool> {
-    if router_node.meta().deletion_timestamp.is_none() {
-        return Ok(false);
-    }
-    if allocation::has_finalizer(router_node.finalizers(), allocation::ROUTER_POOL_FINALIZER) {
-        if let Some(pool_name) = router_node.status.as_ref().and_then(|s| s.pool.as_deref())
-            && let Err(e) =
-                allocation::release_router_pool_slot(router_pools_api, pool_name, node).await
-        {
-            tracing::warn!(node, pool = pool_name, error = %e, "failed to release RouterPool slot on delete");
-        }
-        allocation::remove_finalizer(
-            router_nodes_api,
-            node,
-            router_node.finalizers(),
-            allocation::ROUTER_POOL_FINALIZER,
-        )
-        .await?;
-    }
-    tracing::info!(
-        node,
-        "RouterNode is being deleted - nothing to converge this run"
+/// Best-effort `Ready=False` condition on the offending `NodeConfig` - mirrors
+/// `router::reconcile::set_node_config_condition`'s/`mesh::reconcile::set_condition`'s exact
+/// type/reason shape in `slipmesh-operators`, for `kubectl` visibility parity. The caller always
+/// follows this with `anyhow::bail!`: this tool has no requeue loop, so failing the whole run
+/// (non-zero exit, cron retries later) is the correct one-shot mirror of operators' "block render,
+/// requeue in 30s" behavior.
+async fn set_node_config_condition(
+    api: &Api<NodeConfig>,
+    node: &NodeConfig,
+    reason: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let existing = node
+        .status
+        .as_ref()
+        .map_or(&[][..], |s| s.conditions.as_slice());
+    let cond = slipmesh_core::condition(
+        existing,
+        "Ready",
+        "False",
+        reason,
+        message,
+        node.meta().generation,
     );
-    Ok(true)
+    api.patch_status(
+        &node.name_any(),
+        &PatchParams::apply("routeros"),
+        &Patch::Merge(&json!({ "status": { "conditions": [cond] } })),
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
@@ -176,78 +142,86 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .await
         .context("failed to build a Kubernetes client from the default kubeconfig")?;
 
-    let mesh_nodes_api: Api<MeshNode> = Api::namespaced(client.clone(), NAMESPACE);
-    let router_nodes_api: Api<RouterNode> = Api::namespaced(client.clone(), NAMESPACE);
+    let nodeconfigs_api: Api<NodeConfig> = Api::namespaced(client.clone(), NAMESPACE);
     let mesh_links_api: Api<MeshLink> = Api::namespaced(client.clone(), NAMESPACE);
-    let mesh_pools_api: Api<MeshPool> = Api::namespaced(client.clone(), NAMESPACE);
-    let router_pools_api: Api<RouterPool> = Api::namespaced(client.clone(), NAMESPACE);
-    let router_configs_api: Api<RouterConfig> = Api::namespaced(client.clone(), NAMESPACE);
+    let clusterconfigs_api: Api<ClusterConfig> = Api::namespaced(client.clone(), NAMESPACE);
     let secrets_api: Api<Secret> = Api::namespaced(client.clone(), NAMESPACE);
 
-    let mesh_node = mesh_nodes_api
+    let own_node_config = nodeconfigs_api
         .get(&cli.node)
         .await
-        .with_context(|| format!("MeshNode {:?} not found in namespace {NAMESPACE:?} - create it before running routeros", cli.node))?;
-    let router_node = router_nodes_api
-        .get(&cli.node)
-        .await
-        .with_context(|| format!("RouterNode {:?} not found in namespace {NAMESPACE:?} - create it before running routeros", cli.node))?;
+        .with_context(|| format!("NodeConfig {:?} not found in namespace {NAMESPACE:?} - create it before running routeros", cli.node))?;
 
-    if handle_router_node_deletion(
-        &router_pools_api,
-        &router_nodes_api,
-        &cli.node,
-        &router_node,
-    )
-    .await?
-    {
-        return Ok(ConvergeReport::default());
-    }
+    let cluster_configs = clusterconfigs_api
+        .list(&ListParams::default())
+        .await
+        .context("failed to list ClusterConfig")?
+        .items;
+    let cluster_config = cluster_config_from_configs(&cluster_configs)?;
+    let bgp_as = cluster_config.bgp_as;
+    let ipv4_loopback_network =
+        slipmesh_core::cidr::parse_network_cidr(&cluster_config.loopback_networks.ipv4)
+            .context("ClusterConfig.loopbackNetworks.ipv4 is not a valid network CIDR")?;
+    let ipv6_loopback_network: (Ipv6Addr, u8) = {
+        let (addr, prefix) = cluster_config
+            .loopback_networks
+            .ipv6
+            .split_once('/')
+            .context("ClusterConfig.loopbackNetworks.ipv6 is not a CIDR (missing '/')")?;
+        let addr = addr
+            .parse()
+            .context("ClusterConfig.loopbackNetworks.ipv6 has an invalid address")?;
+        let prefix: u8 = prefix
+            .parse()
+            .context("ClusterConfig.loopbackNetworks.ipv6 has an invalid prefix length")?;
+        anyhow::ensure!(
+            prefix <= 128,
+            "ClusterConfig.loopbackNetworks.ipv6 prefix length {prefix} exceeds 128"
+        );
+        (addr, prefix)
+    };
 
     let mesh_links = list_arc(&mesh_links_api)
         .await
         .context("failed to list MeshLink")?;
-    let router_nodes = list_arc(&router_nodes_api)
+    let node_configs = list_arc(&nodeconfigs_api)
         .await
-        .context("failed to list RouterNode")?;
-    let mesh_nodes = list_arc(&mesh_nodes_api)
-        .await
-        .context("failed to list MeshNode")?;
-    let router_configs = router_configs_api
-        .list(&ListParams::default())
-        .await
-        .context("failed to list RouterConfig")?
-        .items;
-    let bgp_as = slipmesh_core::router_types::router_config_from_configs(&router_configs)?.bgp_as;
+        .context("failed to list NodeConfig")?;
 
-    let torn_down =
-        teardown_pending_links(&mesh_links_api, &mesh_pools_api, &mesh_links, &cli.node).await?;
+    // node_id collision guard - mirrors router::reconcile::render's own-node_id check in
+    // slipmesh-operators (see AGENTS.md: node_id used to be CAS-protected via RouterPool
+    // allocation, which no longer exists).
+    if let Some(other) =
+        allocation::find_node_id_collision(&node_configs, &cli.node, own_node_config.spec.node_id)
+    {
+        let msg = format!(
+            "node_id {} collides with NodeConfig {}",
+            own_node_config.spec.node_id,
+            other.name_any()
+        );
+        set_node_config_condition(&nodeconfigs_api, &own_node_config, "NodeIdConflict", &msg)
+            .await?;
+        anyhow::bail!(msg);
+    }
+
+    let own_loopback = slipmesh_core::ipv6::ipv4_loopback(
+        ipv4_loopback_network.0,
+        ipv4_loopback_network.1,
+        own_node_config.spec.node_id,
+    );
+    let own_ipv6_loopback = slipmesh_core::ipv6::ipv6_loopback(
+        ipv6_loopback_network.0,
+        ipv6_loopback_network.1,
+        own_node_config.spec.node_id,
+    );
+
+    let torn_down = teardown_pending_links(&mesh_links_api, &mesh_links, &cli.node).await?;
     let mesh_links: Vec<Arc<MeshLink>> = mesh_links
         .into_iter()
         .filter(|l| !torn_down.contains(&l.name_any()))
         .collect();
 
     ensure_link_finalizers(&mesh_links_api, &mesh_links, &cli.node).await?;
-
-    for link in &mesh_links {
-        if allocation::needs_link_allocation(link, &cli.node) {
-            let name = link.name_any();
-            allocation::allocate_link(&mesh_pools_api, &mesh_links_api, link, &name).await?;
-        }
-    }
-    // Re-fetch: allocate_link/ensure_loopback patched status server-side, invisible to the
-    // in-memory Vec<Arc<MeshLink>> fetched above.
-    let mesh_links = list_arc(&mesh_links_api)
-        .await
-        .context("failed to re-list MeshLink after allocation")?;
-
-    let own_loopback = ensure_loopback(
-        &router_pools_api,
-        &router_nodes_api,
-        &cli.node,
-        &router_node,
-    )
-    .await?;
 
     let creds_secret = find_credentials_secret(&secrets_api, &cli.node).await?;
     let creds = credentials::parse_from_secret(&creds_secret)?;
@@ -265,20 +239,38 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         base64::engine::general_purpose::STANDARD.encode(private_key)
     };
     let public_key_b64 = slipmesh_core::keys::derive_public_key(private_key);
-    if mesh_node
+
+    // public_key collision guard - mirrors mesh::reconcile::reconcile's public-key check in
+    // slipmesh-operators: two nodes sharing a public key would bind every mesh-* interface peering
+    // with either one to the same kernel identity.
+    if let Some(other) =
+        allocation::find_public_key_collision(&node_configs, &cli.node, &public_key_b64)
+    {
+        let msg = format!("public key collides with NodeConfig {}", other.name_any());
+        set_node_config_condition(
+            &nodeconfigs_api,
+            &own_node_config,
+            "PublicKeyConflict",
+            &msg,
+        )
+        .await?;
+        anyhow::bail!(msg);
+    }
+
+    if own_node_config
         .status
         .as_ref()
         .and_then(|s| s.public_key.as_deref())
         != Some(public_key_b64.as_str())
     {
-        mesh_nodes_api
+        nodeconfigs_api
             .patch_status(
                 &cli.node,
                 &PatchParams::apply("routeros"),
                 &Patch::Merge(&json!({ "status": { "publicKey": public_key_b64 } })),
             )
             .await
-            .context("failed to publish this device's public key to its own MeshNode")?;
+            .context("failed to publish this device's public key to its own NodeConfig")?;
     }
 
     let device = crate::mikrotik::connect(&creds)
@@ -292,17 +284,17 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
 
     let own = OwnIdentity {
         node_name: &cli.node,
-        mesh_label: &mesh_node.spec.mesh_label,
-        router_label: &router_node.spec.router_label,
         loopback: own_loopback,
+        ipv6_loopback: own_ipv6_loopback,
         private_key_b64: &private_key_b64,
     };
     let desired: DesiredState = config::desired_state(
         &own,
         bgp_as,
-        &mesh_nodes,
+        ipv4_loopback_network,
+        ipv6_loopback_network,
+        &node_configs,
         &mesh_links,
-        &router_nodes,
         &physically_connected_prefixes,
     )?;
 

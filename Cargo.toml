@@ -31,3 +31,12 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
+
+# TEMPORARY dev-time override: points slipmesh-core at the sibling checkout's
+# feat/ospfv3-rfc8950-node-config branch instead of the pinned rev above, so this workspace builds
+# against the in-progress core changes for the NodeConfig/ClusterConfig + OSPFv3/RFC 8950 migration.
+# Remove once core's branch is committed/pushed and the rev above is bumped to a real commit hash -
+# never ship this override. Mirrors the identical, equally temporary override in
+# slipmesh-operators' own Cargo.toml.
+[patch."https://github.com/slipmesh/core"]
+slipmesh-core = { path = "../core" }

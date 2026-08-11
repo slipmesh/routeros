@@ -1,25 +1,31 @@
-//! Loopback (`RouterPool`) and `/31`+port (`MeshPool`) allocation, plus the finalizer protocol
-//! `hq` must participate in as a full mesh-fleet node - mirroring `router::reconcile::
-//! allocate_router_loopback`/`mesh::reconcile::allocate_link_addressing` and their respective
-//! finalizer handling in `slipmesh-operators`, just performed once per run instead of in a live
-//! reconcile loop. See AGENTS.md.
+//! The `MeshLink` interface-cleanup finalizer lifecycle `hq` must participate in as a full
+//! mesh-fleet node, plus node_id/public_key collision guards - mirroring
+//! `mesh::reconcile::reconcile`'s own finalizer handling and uniqueness checks in
+//! `slipmesh-operators`, just performed once per run instead of in a live reconcile loop. See
+//! AGENTS.md.
 //!
-//! Pure predicates/helpers here are unit-tested directly; the actual `Api::replace_status`/
-//! `Api::patch` calls are a thin, deliberately-untested I/O layer (see AGENTS.md's "no mocking
-//! framework" convention) - verified against a real cluster/device in the manual pass instead.
+//! Before the NodeConfig/ClusterConfig migration this module also drove `RouterPool`/`MeshPool`
+//! CAS allocation for a node's loopback and a link's `/31`+port. Neither exists any more:
+//! `slipmesh_core::pool` and `slipmesh_core::mesh_math` were removed along with `RouterPool`/
+//! `MeshPool` - a node's loopback/link-local are pure functions of a manually-assigned
+//! `NodeConfig.spec.node_id` (see `slipmesh_core::ipv6`), and a link's UDP port is a manual
+//! `MeshLink.spec.port` field, like `obfuscation`. That CAS used to make a `node_id`/public_key
+//! collision structurally impossible; a manually-assigned `node_id` with no CAS makes it a real,
+//! human-typo-shaped risk, so this module now also carries the pure collision-detection helpers
+//! `run.rs` fails the whole run on - mirroring `router::reconcile::render`'s own-node_id check and
+//! `mesh::reconcile::reconcile`'s public-key check, adapted to scan the whole `node_configs` slice
+//! at once since this tool has no per-reconcile "the other object" framing.
+//!
+//! Pure predicates/helpers here are unit-tested directly; the actual `Api::patch` calls are a
+//! thin, deliberately-untested I/O layer (see AGENTS.md's "no mocking framework" convention) -
+//! verified against a real cluster/device in the manual pass instead.
 
 use kube::api::{Patch, PatchParams};
-use kube::{Api, Resource, ResourceExt};
-use serde_json::json;
-use slipmesh_core::mesh_types::{MeshLink, MeshPool};
-use slipmesh_core::router_types::{RouterNode, RouterPool};
+use kube::{Resource, ResourceExt};
+use slipmesh_core::mesh_types::MeshLink;
+use slipmesh_core::node_config_types::NodeConfig;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-
-/// Single-party finalizer on `hq`'s own `RouterNode` - releases its `RouterPool` slot on delete.
-/// Mirrors `router::reconcile::ROUTER_POOL_FINALIZER` exactly (same string, same one-finalizer-
-/// per-object shape, since a `RouterNode` has exactly one owning party unlike `MeshLink`).
-pub const ROUTER_POOL_FINALIZER: &str = "slipmesh.net/router-pool-release";
 
 /// Per-node finalizer on a `MeshLink` `hq` is a party to - mirrors `mesh::reconcile::
 /// finalizer_for` exactly. Per-node, not per-object: a shared finalizer string couldn't express
@@ -50,26 +56,6 @@ pub fn without_finalizer(finalizers: &[String], finalizer: &str) -> Vec<String> 
         .collect()
 }
 
-/// Loopback allocation is only needed once - after that, `status.loopback` is always populated
-/// (whether it came from a pin or a pool draw), exactly mirroring the gate
-/// `router::reconcile::render` itself uses before ever calling `allocate_router_loopback`.
-pub fn needs_loopback_allocation(node: &RouterNode) -> bool {
-    node.status.as_ref().and_then(|s| s.loopback).is_none()
-}
-
-/// A `/31`+port only needs allocating when `hq` is the link's authoritative side (`node_a` - see
-/// `MeshLinkSpec::is_lower`) *and* nothing has been allocated yet. When `hq` is `node_b`, the
-/// peer's `mesh` operator already drove this allocation - `hq` only ever reads `status.network`/
-/// `status.port`, never allocates on that link's behalf.
-pub fn needs_link_allocation(link: &MeshLink, own_node_name: &str) -> bool {
-    link.spec.is_lower(own_node_name)
-        && link
-            .status
-            .as_ref()
-            .and_then(|s| s.network.as_ref())
-            .is_none()
-}
-
 /// Every `MeshLink` `hq` is a party to, already marked for deletion, that still carries `hq`'s own
 /// finalizer - these must be torn down (device config removed, finalizer released) before the
 /// normal convergence pass runs, exactly mirroring `mesh::reconcile`'s deletion-handling branch.
@@ -90,8 +76,8 @@ pub fn links_pending_teardown<'a>(
 
 /// Every `MeshLink` `hq` is a party to, not being deleted, that doesn't yet carry `hq`'s own
 /// finalizer - mirrors `mesh::reconcile`'s "add our finalizer if involved and not already
-/// present" step, run before allocation/convergence so a freshly-created link is protected from
-/// this device's very first reconcile pass onward, same as a Linux node's operator pod would do.
+/// present" step, run before convergence so a freshly-created link is protected from this
+/// device's very first reconcile pass onward, same as a Linux node's operator pod would do.
 pub fn links_needing_finalizer<'a>(
     links: &'a [Arc<MeshLink>],
     own_node_name: &str,
@@ -107,212 +93,10 @@ pub fn links_needing_finalizer<'a>(
         .collect()
 }
 
-/// Successive loopback candidates within `network/prefix_len`, in address order - skips `.0` (not
-/// a usable host address). Paired with `None` (no port concept) to match `slipmesh_core::pool::
-/// allocate`'s generic candidate shape. Ported verbatim from `router::reconcile::
-/// router_pool_candidates`.
-pub fn router_pool_candidates(
-    network: Ipv4Addr,
-    prefix_len: u8,
-) -> impl Iterator<Item = (String, Option<u16>)> {
-    let network_u32 = u32::from(network);
-    let host_bits = 32 - u32::from(prefix_len);
-    let network_size: u64 = 1u64 << host_bits;
-    (1u32..).map_while(move |offset| {
-        let addr = network_u32.checked_add(offset)?;
-        let in_range = (u64::from(offset)) < network_size;
-        in_range.then(|| (Ipv4Addr::from(addr).to_string(), None))
-    })
-}
-
-struct RouterPoolInfo {
-    network: Ipv4Addr,
-    prefix_len: u8,
-}
-
-async fn valid_router_pools(
-    pools_api: &Api<RouterPool>,
-) -> anyhow::Result<Vec<slipmesh_core::pool::ParsedPool<RouterPoolInfo>>> {
-    slipmesh_core::pool::valid_pools(pools_api, |p| {
-        let (network, prefix_len) = slipmesh_core::cidr::parse_network_cidr(&p.spec.network)?;
-        Ok(RouterPoolInfo {
-            network,
-            prefix_len,
-        })
-    })
-    .await
-}
-
-/// Allocates (or, for a pinned `spec.loopback`, registers) this device's loopback address and
-/// patches `RouterNode.status`. Mirrors `router::reconcile::allocate_router_loopback` - notably,
-/// even a pinned loopback still goes through `slipmesh_core::pool::allocate` with a single-
-/// candidate iterator, so the pool's own `status.allocated` tracks it (preventing a collision with
-/// another node claiming the same address), rather than bypassing the pool entirely.
-pub async fn allocate_loopback(
-    router_pools: &Api<RouterPool>,
-    router_nodes: &Api<RouterNode>,
-    node_name: &str,
-    node: &RouterNode,
-) -> anyhow::Result<Ipv4Addr> {
-    let pools = valid_router_pools(router_pools).await?;
-
-    if let Some(pinned) = node.spec.loopback {
-        let pool = pools
-            .iter()
-            .find(|p| {
-                slipmesh_core::cidr::cidr_contains(p.value.network, p.value.prefix_len, pinned)
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!("no RouterPool configured contains pinned loopback {pinned}")
-            })?;
-        let allocated = slipmesh_core::pool::allocate(
-            router_pools,
-            &pool.name,
-            node_name,
-            std::iter::once((pinned.to_string(), None)),
-        )
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!("pinned loopback {pinned} is already allocated to another RouterNode")
-        })?;
-        let _ = allocated;
-        patch_router_node_loopback(router_nodes, node_name, &pool.name, pinned).await?;
-        return Ok(pinned);
-    }
-
-    for pool in &pools {
-        let candidates = router_pool_candidates(pool.value.network, pool.value.prefix_len);
-        if let Some((value, _)) =
-            slipmesh_core::pool::allocate(router_pools, &pool.name, node_name, candidates).await?
-        {
-            let addr: Ipv4Addr = value
-                .parse()
-                .expect("value came from this same pool's own router_pool_candidates");
-            patch_router_node_loopback(router_nodes, node_name, &pool.name, addr).await?;
-            return Ok(addr);
-        }
-    }
-    anyhow::bail!("no RouterPool has room for a new node")
-}
-
-async fn patch_router_node_loopback(
-    api: &Api<RouterNode>,
-    name: &str,
-    pool: &str,
-    loopback: Ipv4Addr,
-) -> anyhow::Result<()> {
-    let patch = json!({ "status": { "pool": pool, "loopback": loopback.to_string() } });
-    api.patch_status(name, &PatchParams::apply("routeros"), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-struct MeshPoolInfo {
-    network: Ipv4Addr,
-    prefix_len: u8,
-    base_port: u16,
-}
-
-async fn valid_mesh_pools(
-    pools_api: &Api<MeshPool>,
-) -> anyhow::Result<Vec<slipmesh_core::pool::ParsedPool<MeshPoolInfo>>> {
-    slipmesh_core::pool::valid_pools(pools_api, |p| {
-        let (network, prefix_len) = slipmesh_core::cidr::parse_network_cidr(&p.spec.network)?;
-        Ok(MeshPoolInfo {
-            network,
-            prefix_len,
-            base_port: p.spec.base_port,
-        })
-    })
-    .await
-}
-
-async fn patch_link_allocation(
-    api: &Api<MeshLink>,
-    name: &str,
-    pool: &str,
-    network: &str,
-    port: u16,
-) -> anyhow::Result<()> {
-    let patch = json!({ "status": { "pool": pool, "network": network, "port": port } });
-    api.patch_status(name, &PatchParams::apply("routeros"), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Allocates (or, for a pinned `spec.network`, registers) this link's `/31`+port and patches
-/// `MeshLink.status`. Only ever called when `hq` is `node_a` (see [`needs_link_allocation`]) -
-/// mirrors `mesh::reconcile::allocate_link_addressing`.
-pub async fn allocate_link(
-    mesh_pools: &Api<MeshPool>,
-    mesh_links: &Api<MeshLink>,
-    link: &MeshLink,
-    link_name: &str,
-) -> anyhow::Result<(String, u16)> {
-    let pools = valid_mesh_pools(mesh_pools).await?;
-
-    if let Some(pinned) = &link.spec.network {
-        let (pinned_addr, prefix) = slipmesh_core::cidr::parse_cidr(pinned)?;
-        anyhow::ensure!(prefix == 31, "pinned network {pinned:?} is not a /31");
-        let pool = pools
-            .iter()
-            .find(|p| {
-                slipmesh_core::cidr::cidr_contains(p.value.network, p.value.prefix_len, pinned_addr)
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!("no MeshPool configured contains pinned network {pinned:?}")
-            })?;
-        let index = slipmesh_core::mesh_math::index_of(pool.value.network, pinned_addr).ok_or_else(|| {
-            anyhow::anyhow!(
-                "pinned network {pinned:?} is not aligned to a /31 slot boundary of MeshPool {:?}",
-                pool.name
-            )
-        })?;
-        let port = pool
-            .value
-            .base_port
-            .checked_add(u16::try_from(index).map_err(|_| anyhow::anyhow!("link index overflow"))?)
-            .ok_or_else(|| anyhow::anyhow!("port overflow allocating pinned network {pinned:?}"))?;
-        let (value, port) = slipmesh_core::pool::allocate(
-            mesh_pools,
-            &pool.name,
-            link_name,
-            std::iter::once((pinned.clone(), Some(port))),
-        )
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!("pinned network {pinned:?} is already allocated to another MeshLink")
-        })?;
-        let port = port.expect("mesh candidates always carry Some(port)");
-        patch_link_allocation(mesh_links, link_name, &pool.name, &value, port).await?;
-        return Ok((value, port));
-    }
-
-    for pool in &pools {
-        let candidates = slipmesh_core::mesh_math::candidate_networks(
-            pool.value.network,
-            pool.value.prefix_len,
-            pool.value.base_port,
-        )
-        .map(|(v, p)| (v, Some(p)));
-        if let Some((value, port)) =
-            slipmesh_core::pool::allocate(mesh_pools, &pool.name, link_name, candidates).await?
-        {
-            let port = port.expect("mesh candidates always carry Some(port)");
-            patch_link_allocation(mesh_links, link_name, &pool.name, &value, port).await?;
-            return Ok((value, port));
-        }
-    }
-    anyhow::bail!("no MeshPool has room for a new link")
-}
-
 /// Adds `finalizer` to `name`'s `metadata.finalizers` if not already present. A no-op patch is
 /// avoided by the caller only ever invoking this via [`links_needing_finalizer`]'s result.
-/// Generic over `K` - the finalizer patch shape (`metadata.finalizers`) is identical regardless of
-/// resource kind, used for both `MeshLink` (per-node finalizer) and `RouterNode`
-/// ([`ROUTER_POOL_FINALIZER`]).
 pub async fn add_finalizer<K>(
-    api: &Api<K>,
+    api: &kube::Api<K>,
     name: &str,
     current: &[String],
     finalizer: &str,
@@ -324,14 +108,15 @@ where
         + kube::Resource<DynamicType = ()>
         + serde::Serialize,
 {
-    let patch = json!({ "metadata": { "finalizers": with_finalizer(current, finalizer) } });
+    let patch =
+        serde_json::json!({ "metadata": { "finalizers": with_finalizer(current, finalizer) } });
     api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
         .await?;
     Ok(())
 }
 
 pub async fn remove_finalizer<K>(
-    api: &Api<K>,
+    api: &kube::Api<K>,
     name: &str,
     current: &[String],
     finalizer: &str,
@@ -343,35 +128,47 @@ where
         + kube::Resource<DynamicType = ()>
         + serde::Serialize,
 {
-    let patch = json!({ "metadata": { "finalizers": without_finalizer(current, finalizer) } });
+    let patch =
+        serde_json::json!({ "metadata": { "finalizers": without_finalizer(current, finalizer) } });
     api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
         .await?;
     Ok(())
 }
 
-/// Releases this link's `MeshPool` slot (only ever held by the `node_a` side - see
-/// `MeshLinkSpec::is_lower`) - idempotent, a missing entry is not an error.
-pub async fn release_link_pool_slot(
-    mesh_pools: &Api<slipmesh_core::mesh_types::MeshPool>,
-    pool_name: &str,
-    link_name: &str,
-) -> anyhow::Result<()> {
-    slipmesh_core::pool::release(mesh_pools, pool_name, link_name).await
+/// The first other live `NodeConfig` (if any) that claims the same `node_id` as this device's own.
+/// This used to be a collision structurally impossible under `RouterPool`'s CAS, now a real,
+/// human-typo-shaped risk since `node_id` is a plain manually-assigned spec field. Mirrors
+/// `router::reconcile::render`'s own-node_id check in `slipmesh-operators`.
+pub fn find_node_id_collision<'a>(
+    node_configs: &'a [Arc<NodeConfig>],
+    own_name: &str,
+    own_node_id: Ipv4Addr,
+) -> Option<&'a Arc<NodeConfig>> {
+    node_configs
+        .iter()
+        .find(|n| n.name_any() != own_name && n.spec.node_id == own_node_id)
 }
 
-pub async fn release_router_pool_slot(
-    router_pools: &Api<RouterPool>,
-    pool_name: &str,
-    node_name: &str,
-) -> anyhow::Result<()> {
-    slipmesh_core::pool::release(router_pools, pool_name, node_name).await
+/// The first other live `NodeConfig` (if any) that claims the same public key as this device's own.
+/// Two nodes sharing a public key would bind every `mesh-*` interface peering with either one to
+/// the same kernel identity. Mirrors `mesh::reconcile::reconcile`'s public-key collision check in
+/// `slipmesh-operators`.
+pub fn find_public_key_collision<'a>(
+    node_configs: &'a [Arc<NodeConfig>],
+    own_name: &str,
+    own_public_key: &str,
+) -> Option<&'a Arc<NodeConfig>> {
+    node_configs.iter().find(|n| {
+        n.name_any() != own_name
+            && n.status.as_ref().and_then(|s| s.public_key.as_deref()) == Some(own_public_key)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slipmesh_core::mesh_types::{MeshLinkSpec, MeshLinkStatus, Obfuscation};
-    use slipmesh_core::router_types::{RouterNodeSpec, RouterNodeStatus};
+    use slipmesh_core::mesh_types::{MeshLinkSpec, Obfuscation};
+    use slipmesh_core::node_config_types::{NodeConfig, NodeConfigSpec, NodeConfigStatus};
 
     fn link(node_a: &str, node_b: &str) -> MeshLink {
         MeshLink::new(
@@ -380,9 +177,24 @@ mod tests {
                 node_a: node_a.to_string(),
                 node_b: node_b.to_string(),
                 obfuscation: Obfuscation::default(),
-                network: None,
+                port: 51820,
             },
         )
+    }
+
+    fn node_config(name: &str, node_id: Ipv4Addr, public_key: Option<&str>) -> Arc<NodeConfig> {
+        let mut n = NodeConfig::new(
+            name,
+            NodeConfigSpec {
+                node_id,
+                endpoint: None,
+            },
+        );
+        n.status = Some(NodeConfigStatus {
+            conditions: vec![],
+            public_key: public_key.map(str::to_string),
+        });
+        Arc::new(n)
     }
 
     #[test]
@@ -395,61 +207,6 @@ mod tests {
         assert_eq!(without_finalizer(&one, "f1"), Vec::<String>::new());
         // Removing an absent finalizer is a no-op, not an error.
         assert_eq!(without_finalizer(&none, "f1"), none);
-    }
-
-    #[test]
-    fn needs_loopback_allocation_true_until_status_is_populated() {
-        let mut node = RouterNode::new(
-            "hq",
-            RouterNodeSpec {
-                loopback: None,
-                router_label: "hq".to_string(),
-            },
-        );
-        assert!(needs_loopback_allocation(&node));
-        node.status = Some(RouterNodeStatus {
-            conditions: vec![],
-            pool: Some("pool1".to_string()),
-            loopback: Some(Ipv4Addr::new(10, 62, 0, 1)),
-        });
-        assert!(!needs_loopback_allocation(&node));
-    }
-
-    #[test]
-    fn needs_loopback_allocation_true_even_with_a_pin_until_registered() {
-        // A pin alone doesn't satisfy the gate - allocate_loopback must still run once to
-        // register it in the pool (see the doc comment on allocate_loopback).
-        let node = RouterNode::new(
-            "hq",
-            RouterNodeSpec {
-                loopback: Some(Ipv4Addr::new(10, 62, 0, 1)),
-                router_label: "hq".to_string(),
-            },
-        );
-        assert!(needs_loopback_allocation(&node));
-    }
-
-    #[test]
-    fn needs_link_allocation_only_when_node_a_and_unallocated() {
-        let l = link("hq", "fra");
-        assert!(needs_link_allocation(&l, "hq")); // node_a, no status at all
-        assert!(!needs_link_allocation(&l, "fra")); // node_b never allocates
-
-        let mut allocated = link("hq", "fra");
-        allocated.status = Some(MeshLinkStatus {
-            conditions: vec![],
-            pool: Some("pool".to_string()),
-            network: Some("10.0.0.0/31".to_string()),
-            port: Some(51820),
-        });
-        assert!(!needs_link_allocation(&allocated, "hq"));
-    }
-
-    #[test]
-    fn router_pool_candidates_skips_dot_zero() {
-        let mut c = router_pool_candidates(Ipv4Addr::new(172, 21, 0, 0), 24);
-        assert_eq!(c.next(), Some(("172.21.0.1".to_string(), None)));
-        assert_eq!(c.next(), Some(("172.21.0.2".to_string(), None)));
     }
 
     #[test]
@@ -479,5 +236,47 @@ mod tests {
         let needing = links_needing_finalizer(&links, "hq");
         assert_eq!(needing.len(), 1);
         assert_eq!(needing[0].spec.node_b, "fra");
+    }
+
+    #[test]
+    fn node_id_collision_finds_the_other_node_sharing_our_id() {
+        let nodes = vec![
+            node_config("hq", Ipv4Addr::new(0, 0, 0, 1), None),
+            node_config("fra", Ipv4Addr::new(0, 0, 0, 2), None),
+        ];
+        assert!(find_node_id_collision(&nodes, "hq", Ipv4Addr::new(0, 0, 0, 1)).is_none());
+
+        let colliding = vec![
+            node_config("hq", Ipv4Addr::new(0, 0, 0, 5), None),
+            node_config("fra", Ipv4Addr::new(0, 0, 0, 5), None),
+        ];
+        let hit = find_node_id_collision(&colliding, "hq", Ipv4Addr::new(0, 0, 0, 5));
+        assert_eq!(hit.map(|n| n.name_any()), Some("fra".to_string()));
+    }
+
+    #[test]
+    fn node_id_collision_ignores_self() {
+        let nodes = vec![node_config("hq", Ipv4Addr::new(0, 0, 0, 1), None)];
+        assert!(find_node_id_collision(&nodes, "hq", Ipv4Addr::new(0, 0, 0, 1)).is_none());
+    }
+
+    #[test]
+    fn public_key_collision_finds_the_other_node_sharing_our_key() {
+        let nodes = vec![
+            node_config("hq", Ipv4Addr::new(0, 0, 0, 1), Some("same-key")),
+            node_config("fra", Ipv4Addr::new(0, 0, 0, 2), Some("same-key")),
+        ];
+        let hit = find_public_key_collision(&nodes, "hq", "same-key");
+        assert_eq!(hit.map(|n| n.name_any()), Some("fra".to_string()));
+    }
+
+    #[test]
+    fn public_key_collision_none_when_keys_differ_or_unset() {
+        let nodes = vec![
+            node_config("hq", Ipv4Addr::new(0, 0, 0, 1), Some("key-a")),
+            node_config("fra", Ipv4Addr::new(0, 0, 0, 2), Some("key-b")),
+            node_config("lon", Ipv4Addr::new(0, 0, 0, 3), None),
+        ];
+        assert!(find_public_key_collision(&nodes, "hq", "key-a").is_none());
     }
 }

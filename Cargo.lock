@@ -1899,7 +1899,6 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slipmesh-core"
 version = "0.1.0"
-source = "git+https://github.com/slipmesh/core?rev=bce93491ee0ad1f944221ed29815fe4aab84a9b6#bce93491ee0ad1f944221ed29815fe4aab84a9b6"
 dependencies = [
  "anyhow",
  "base64 0.23.0",

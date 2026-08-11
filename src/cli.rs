@@ -10,8 +10,8 @@ use clap::Parser;
     about = "Converges a MikroTik RouterOS device to the slipmesh mesh's desired state"
 )]
 pub struct Cli {
-    /// Name of the MeshNode/RouterNode pair identifying this physical router - both must already
-    /// exist in the slipmesh namespace (created by a human/GitOps ahead of time).
+    /// Name of the NodeConfig identifying this physical router - must already exist in the
+    /// slipmesh namespace (created by a human/GitOps ahead of time).
     #[arg(long)]
     pub node: String,
 

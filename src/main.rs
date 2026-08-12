@@ -1,10 +1,11 @@
-mod allocation;
+mod cidr;
 mod cli;
 mod config;
 mod converge;
 mod credentials;
 mod diff;
 mod mikrotik;
+mod patch;
 mod run;
 mod sanitize;
 

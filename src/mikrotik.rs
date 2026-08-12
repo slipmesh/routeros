@@ -406,10 +406,15 @@ pub async fn apply_ip_addresses(
 /// This device's own physically-connected subnets (every `ip address` interface that isn't a
 /// `mesh-*` tunnel or the loopback bridge), normalized to network base - the BGP-announced prefix
 /// set is computed fresh from this on every run, never configured (see AGENTS.md).
+/// Reads every `ip address` row on an interface that isn't ours (`mesh-*`/orphaned raw id) or the
+/// loopback bridge - candidates for `config::desired_state`'s `direct_interfaces`/`learn`
+/// filtering, which owns the policy of what actually gets announced. This function is a dumb
+/// reader: it returns every physically-connected `(interface, network)` pair it finds, filtering
+/// nothing but our own infrastructure.
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<(String, String)>> {
     let rows = print(device, IP_ADDRESS_PATH).await?;
     let mut prefixes = Vec::new();
     for row in &rows {
@@ -421,7 +426,7 @@ pub async fn read_physically_connected_prefixes(
             continue;
         }
         match address_to_network(&a.address) {
-            Ok(network) => prefixes.push(network),
+            Ok(network) => prefixes.push((a.interface.clone(), network)),
             Err(e) => {
                 tracing::warn!(address = %a.address, interface = %a.interface, error = %e, "skipping unparsable physically-connected address")
             }
@@ -434,11 +439,8 @@ pub async fn read_physically_connected_prefixes(
 /// to its containing network base (`"192.168.88.0/24"`) - `ip address` rows carry the host
 /// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<String> {
-    let (addr, prefix_len) = slipmesh_core::cidr::parse_cidr(address)?;
-    let network = Ipv4Addr::from(slipmesh_core::cidr::network_addr(
-        u32::from(addr),
-        prefix_len,
-    ));
+    let (addr, prefix_len) = crate::cidr::parse_cidr(address)?;
+    let network = crate::cidr::network_addr(addr, prefix_len);
     Ok(format!("{network}/{prefix_len}"))
 }
 

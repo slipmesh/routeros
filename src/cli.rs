@@ -1,5 +1,5 @@
-//! CLI surface - see AGENTS.md: `routeros --node=hq [--check] [--diff]`, modeled on
-//! `ansible-playbook --check --diff`.
+//! CLI surface - see AGENTS.md: `routeros --node=hq [--patches-dir=patches] [--check] [--diff]`,
+//! modeled on `ansible-playbook --check --diff`.
 
 use clap::Parser;
 
@@ -7,13 +7,18 @@ use clap::Parser;
 #[command(
     name = "routeros",
     version,
-    about = "Converges a MikroTik RouterOS device to the slipmesh mesh's desired state"
+    about = "Converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches"
 )]
 pub struct Cli {
-    /// Name of the NodeConfig identifying this physical router - must already exist in the
-    /// slipmesh namespace (created by a human/GitOps ahead of time).
+    /// Node name - reads `<patches-dir>/<node>.yaml`, the patch file `talos-extensions/patches
+    /// generate` produces for this node from `mesh.yaml`.
     #[arg(long)]
     pub node: String,
+
+    /// Directory containing `talos-extensions/patches generate`'s output - same default/
+    /// convention as that tool's own `--patches-dir`.
+    #[arg(long, default_value = "patches")]
+    pub patches_dir: String,
 
     /// Compute the diff against the device's current state but never apply it.
     #[arg(long)]

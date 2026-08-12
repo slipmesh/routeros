@@ -7,36 +7,23 @@ authors = ["Evgeniy Slizevich <evgeniy@slizevich.net>"]
 # binary depends on mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio)
 # is AGPL-3.0-only - any binary linking it must itself be AGPL-3.0-compatible. See AGENTS.md.
 license = "AGPL-3.0-only"
-description = "One-shot CLI tool that converges a MikroTik RouterOS device to the slipmesh mesh's desired state, read from Kubernetes CRDs"
+description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches from mesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
 
 [dependencies]
-# Pinned to a specific rev, not a branch - reproducible builds, bumped deliberately (see AGENTS.md).
-slipmesh-core = { git = "https://github.com/slipmesh/core", rev = "bce93491ee0ad1f944221ed29815fe4aab84a9b6" }
+# Local path deps: talos-extensions has no git remote yet. Switch to a pinned git rev (mirroring
+# how slipmesh-core used to be pinned) once one exists - see AGENTS.md.
+awg = { path = "../talos-extensions/awg" }
+router = { path = "../talos-extensions/router" }
 
 mikrotik-rs = { version = "0.8.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"
-base64 = "0.23.0"
 clap = { version = "4.6.5", features = ["derive"] }
-k8s-openapi = { version = "0.28.0", features = ["v1_36", "schemars"] }
-kube = { version = "4.2.0", default-features = false, features = ["client", "rustls-tls", "aws-lc-rs", "derive"] }
 rustls = { version = "0.23.43", default-features = false, features = ["aws-lc-rs"] }
 rustls-native-certs = "0.8.4"
-schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_yaml = "0.9.34"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-[dev-dependencies]
-
-# TEMPORARY dev-time override: points slipmesh-core at the sibling checkout's
-# feat/ospfv3-rfc8950-node-config branch instead of the pinned rev above, so this workspace builds
-# against the in-progress core changes for the NodeConfig/ClusterConfig + OSPFv3/RFC 8950 migration.
-# Remove once core's branch is committed/pushed and the rev above is bumped to a real commit hash -
-# never ship this override. Mirrors the identical, equally temporary override in
-# slipmesh-operators' own Cargo.toml.
-[patch."https://github.com/slipmesh/core"]
-slipmesh-core = { path = "../core" }

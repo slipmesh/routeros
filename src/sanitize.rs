@@ -1,20 +1,20 @@
-//! Allow-list validation for any string sourced from a CRD (`NodeConfig`) before it reaches a
-//! RouterOS command attribute. `mikrotik-rs`'s `CommandBuilder` transmits each attribute as its
-//! own length-prefixed API word - there's no single concatenated command line for an embedded
-//! separator to break out of the way there is for BIRD config text or an nftables ruleset - but a
-//! malformed value can still produce a confusing or outright rejected command on the device.
-//! Validate here, fail fast with a clear error, rather than send an unvalidated value to a live
-//! device.
+//! Allow-list validation for any string sourced from the patch file (`awg`/`router` documents,
+//! themselves already validated by `patches generate`/`awg::config::validate`/
+//! `router::config::validate`) before it reaches a RouterOS command attribute. `mikrotik-rs`'s
+//! `CommandBuilder` transmits each attribute as its own length-prefixed API word - there's no
+//! single concatenated command line for an embedded separator to break out of the way there is for
+//! BIRD config text or an nftables ruleset - but a malformed value can still produce a confusing or
+//! outright rejected command on the device. Validate here, fail fast with a clear error, rather
+//! than send an unvalidated value to a live device.
 //!
-//! `mesh_label`/`router_label` used to need the same treatment before they reached an interface/
-//! connection name, but the NodeConfig/ClusterConfig migration (see AGENTS.md) removed both -
-//! every identifier `routeros` builds today is either a `NodeConfig` object name (already
-//! validated by Kubernetes' own name rules) or `slipmesh_core::ipv6::short_id`'s hex output
-//! (`mesh-2`, `bgp-2` - safe by construction, no injection surface, nothing to validate).
+//! Most identifiers `routeros` builds today are mesh-interface/BGP-connection names derived
+//! straight from `AwgConfig`/`RouterConfig` fields that are already syntax-constrained upstream
+//! (`InterfaceEntry::name`, `BgpPeerEntry::name`) - the one field with genuinely free-form syntax
+//! is a WireGuard peer's `endpoint` host, hence the single validator below.
 
-/// `NodeConfig.spec.endpoint` - a free-form string with no CRD-level regex/length constraint, used
-/// directly as a RouterOS `endpoint-address`. Allows what a hostname or IPv4/IPv6 literal can
-/// actually contain: alphanumerics, `.`, `-`, `:`.
+/// The host part of an `awg::config::PeerEntry::endpoint` (`"host:port"`, port already split off
+/// by `config::parse_endpoint`), used directly as a RouterOS `endpoint-address`. Allows what a
+/// hostname or IPv4/IPv6 literal can actually contain: alphanumerics, `.`, `-`, `:`.
 pub fn validate_endpoint(endpoint: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!endpoint.is_empty(), "endpoint must not be empty");
     anyhow::ensure!(

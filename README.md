@@ -1,36 +1,36 @@
 # routeros
 
-One-shot CLI tool that converges a MikroTik RouterOS device into the [slipmesh](https://github.com/slipmesh)
-mesh's desired state: WireGuard mesh tunnels plus OSPF/iBGP dynamic routing, computed from the same
-`slipmesh.net` Kubernetes CRDs the [`slipmesh-operators`](https://github.com/ffaxl/slipmesh-operators)
-`mesh`/`router` operators use for Linux nodes.
+One-shot CLI tool that converges a MikroTik RouterOS device into the mesh's desired state:
+WireGuard tunnels plus OSPF/iBGP dynamic routing, computed from a
+[`talos-extensions/patches`](../talos-extensions)-generated patch file (`<node>.yaml`) - the same
+per-node config Talos mounts onto real Talos nodes for the `awg`/`router` daemons, even though the
+RouterOS device itself isn't a Talos node.
 
-RouterOS is treated as a full mesh/router node (uniqueness checks, finalizers - the same lifecycle
-a Linux node's operator pod goes through), just applied by this tool over RouterOS's
-native binary API ([`mikrotik-rs`](https://github.com/ferrohd/mikrotik-rs)) instead of a live
-in-cluster reconcile loop. It is **not** a Kubernetes operator: it runs like `ansible-playbook` -
-invoke it manually, from cron, or a systemd timer - reads what it needs from the cluster once,
-connects to the router once, converges, and exits.
+It applies that state over RouterOS's native binary API
+([`mikrotik-rs`](https://github.com/ferrohd/mikrotik-rs)), never SSH/ansible. It is **not** a
+Kubernetes client and has no dependency on Kubernetes anywhere: it runs like `ansible-playbook` -
+invoke it manually, from cron, or a systemd timer - reads one file, connects to the router once,
+converges, and exits.
 
 ## Usage
 
 ```sh
-routeros --node=hq [--check] [--diff]
+routeros --node=hq --patches-dir=/path/to/IaC/talos/patches [--check] [--diff]
 ```
 
-- `--node` - name of the `NodeConfig` identifying this physical router. It must already exist (a
-  human/GitOps creates it ahead of time); missing it is a fatal error.
+- `--node` + `--patches-dir` - together resolve to `<patches-dir>/<node>.yaml`; missing or
+  malformed is a fatal error.
 - `--check` - compute the diff but don't apply it to the device.
 - `--diff` - print the computed add/update/remove plan to stdout (works with or without `--check`).
 
 Requires:
 
-- A standard kubeconfig (`KUBECONFIG`/`~/.kube/config`) with read/write access to `slipmesh.net`
-  CRDs in the `slipmesh` namespace - the same resolution `kubectl` uses.
+- The patch file to contain three `ExtensionServiceConfig` documents: `awg`, `router` (both
+  produced by `talos-extensions/patches generate` from `mesh.yaml`), and `mikrotik` (hand-authored
+  separately - RouterOS API credentials, preserved untouched across regeneration since it isn't one
+  of `patches`'s own owned document names). See [`AGENTS.md`](./AGENTS.md) for the exact format.
 - Network access to the router's RouterOS API-SSL port (8729), with a TLS certificate the host's
-  own trust store already validates, and credentials in a `Secret` labeled
-  `slipmesh.net/node=<--node>` in the `slipmesh` namespace (fields: `host`, `port`, `username`,
-  `password`, `tls`).
+  own trust store already validates.
 
 See [`AGENTS.md`](./AGENTS.md) for the full architecture and design decisions.
 

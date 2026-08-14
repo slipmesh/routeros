@@ -102,6 +102,8 @@ pub fn desired_state(
     let mut wireguard_interfaces = Vec::new();
     let mut wireguard_peers = Vec::new();
     let mut list_members = Vec::new();
+    let mut mesh_link_locals = Vec::new();
+    let mut mesh_ipv4_addresses = Vec::new();
 
     for iface in &awg.interfaces {
         wireguard_interfaces.push(DesiredWireguardInterface {
@@ -115,6 +117,35 @@ pub fn desired_state(
             interface: iface.name.clone(),
             disabled: false,
         });
+        // `iface.addresses` is whatever `patches generate` already computed for the Linux side,
+        // reused verbatim (same per-node link-local convention as the loopback bridge's own
+        // address; see `router::config`'s addressing doc comments) - applying it explicitly here
+        // rather than relying on RouterOS's own auto-generation, which isn't reliable for a
+        // WireGuard interface (confirmed live on hq: with only one mesh interface enabled it's
+        // fine, but auto-generation produced the *identical* address on every interface once more
+        // existed, and RouterOS's own duplicate address detection marked every one past the first
+        // `invalid`). Can carry more than one IPv6 entry now (`cluster.tunnel_networks.ipv6`, a
+        // second, deliberately still link-local-scoped address - see `mesh_config::ClusterConfig::
+        // tunnel_networks`'s doc comment) alongside a v4 one (`cluster.tunnel_networks.ipv4`) -
+        // that v4 entry is the actual fix `tunnel_networks` exists for: a mesh-* interface
+        // otherwise carries no IPv4 address at all, so NAT/MASQUERADE has nothing valid to pick as
+        // a source when `service_subnet` traffic egresses via one.
+        for addr in &iface.addresses {
+            if addr.contains(':') {
+                mesh_link_locals.push(DesiredIpv6Address {
+                    address: addr.clone(),
+                    interface: iface.name.clone(),
+                    advertise: false,
+                    disabled: false,
+                });
+            } else {
+                mesh_ipv4_addresses.push(DesiredIpAddress {
+                    address: addr.clone(),
+                    interface: iface.name.clone(),
+                    disabled: false,
+                });
+            }
+        }
 
         for peer in &iface.peers {
             let (endpoint_address, endpoint_port, persistent_keepalive) = match &peer.endpoint {
@@ -143,19 +174,24 @@ pub fn desired_state(
         }
     }
 
-    let ip_addresses = vec![DesiredIpAddress {
+    let mut ip_addresses = vec![DesiredIpAddress {
         address: format!("{own_loopback}/32"),
         interface: LOOPBACK_BRIDGE.to_string(),
         disabled: false,
     }];
+    ip_addresses.extend(mesh_ipv4_addresses);
     // `advertise: false` matches `v2-v3.md` §4's `/ipv6 address add ... advertise=no` - this is a
-    // loopback identity, not a LAN prefix to hand out via SLAAC RA.
-    let ip_v6_addresses = vec![DesiredIpv6Address {
+    // loopback identity, not a LAN prefix to hand out via SLAAC RA. Mesh interfaces' own link-locals
+    // (`mesh_link_locals`, built above from `iface.addresses`) join the same table - RouterOS's own
+    // auto-generated ones are actively managed away from now on (see `mikrotik.rs::
+    // read_ipv6_addresses`), not left to collide.
+    let mut ip_v6_addresses = vec![DesiredIpv6Address {
         address: format!("{own_ipv6_loopback}/128"),
         interface: LOOPBACK_BRIDGE.to_string(),
         advertise: false,
         disabled: false,
     }];
+    ip_v6_addresses.extend(mesh_link_locals);
 
     let mut ospf_interface_templates = vec![DesiredOspfInterfaceTemplate {
         interfaces: LOOPBACK_BRIDGE.to_string(),
@@ -270,6 +306,7 @@ pub fn desired_state(
             name: OSPF_INSTANCE.to_string(),
             version: 3,
             router_id: own_loopback,
+            redistribute_connected: true,
             disabled: false,
         },
         ospf_area: DesiredOspfArea {
@@ -396,6 +433,68 @@ mod tests {
     }
 
     #[test]
+    fn mesh_interface_addresses_are_applied_verbatim_from_the_patch_file() {
+        let mut i1 = iface("mesh-2", 51820);
+        i1.addresses = vec!["fe80::a3e:ff/64".to_string()];
+        let mut i2 = iface("mesh-3", 51821);
+        i2.addresses = vec!["fe80::a3e:ff/64".to_string()]; // same literal, different interface
+        let awg = AwgConfig {
+            interfaces: vec![i1, i2],
+        };
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
+
+        // Loopback bridge's own /128 plus one entry per mesh interface - the identical literal is
+        // applied to both, matching what patches generate already computes for the Linux side
+        // (confirmed live on hq: fine with every mesh interface genuinely up simultaneously).
+        assert_eq!(state.ip_v6_addresses.len(), 3);
+        assert!(
+            state
+                .ip_v6_addresses
+                .iter()
+                .any(|a| a.interface == "mesh-2" && a.address == "fe80::a3e:ff/64" && !a.advertise)
+        );
+        assert!(
+            state
+                .ip_v6_addresses
+                .iter()
+                .any(|a| a.interface == "mesh-3" && a.address == "fe80::a3e:ff/64" && !a.advertise)
+        );
+    }
+
+    #[test]
+    fn interface_with_no_addresses_gets_no_extra_ipv6_row() {
+        let awg = AwgConfig {
+            interfaces: vec![iface("mesh-2", 51820)],
+        };
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
+        assert_eq!(state.ip_v6_addresses.len(), 1); // loopback bridge only
+    }
+
+    #[test]
+    fn mesh_interface_ipv4_tunnel_address_becomes_a_desired_ip_address() {
+        // `cluster.tunnel_networks.ipv4` (see mesh_config::ClusterConfig's doc comment): a mesh
+        // interface can carry a v4 entry alongside its link-local(s) - the fix for NAT/MASQUERADE
+        // otherwise having no valid source address when service_subnet traffic egresses via one.
+        let mut i = iface("mesh-2", 51820);
+        i.addresses = vec!["fe80::a3e:ff/64".to_string(), "10.62.1.255/32".to_string()];
+        let awg = AwgConfig {
+            interfaces: vec![i],
+        };
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
+
+        // Loopback bridge's own /32 plus the mesh interface's tunnel v4 address.
+        assert_eq!(state.ip_addresses.len(), 2);
+        assert!(
+            state
+                .ip_addresses
+                .iter()
+                .any(|a| a.interface == "mesh-2" && a.address == "10.62.1.255/32")
+        );
+        // The v6 entry still goes to ip_v6_addresses, not ip_addresses.
+        assert_eq!(state.ip_v6_addresses.len(), 2);
+    }
+
+    #[test]
     fn nat_peer_with_no_endpoint_gets_no_endpoint_or_keepalive() {
         let mut i = iface("mesh-3", 51821);
         i.peers.push(peer("lon-pub", None));
@@ -412,7 +511,7 @@ mod tests {
 
     #[test]
     fn explicit_allowed_ips_are_joined_verbatim() {
-        let mut i = iface("rw-eu", 51900);
+        let mut i = iface("mesh-9", 51900);
         let mut p = peer("rw-pub", None);
         p.allowed_ips = Some(vec!["10.99.0.5/32".to_string()]);
         i.peers.push(p);

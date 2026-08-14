@@ -474,6 +474,18 @@ pub struct DesiredOspfInstance {
     pub name: String,
     pub version: u8,
     pub router_id: Ipv4Addr,
+    /// `redistribute=connected` - without it, RouterOS's `passive` flag on an interface-template
+    /// suppresses hellos (adjacencies still form on non-passive interfaces) but does **not**
+    /// originate an Intra-Area-Prefix-LSA for the passive interface's own connected route, unlike
+    /// BIRD's `stub yes` on the Linux side. Confirmed live on `hq`: with only `passive` set,
+    /// `routing ospf lsa print` showed zero `type="prefix"` LSAs self-originated for the loopback
+    /// bridge's own ULA `/128` - no other node could ever compute a route to it, so iBGP (which
+    /// dials that same loopback) could never establish. Setting `redistribute=connected` fixed it
+    /// immediately (`type="intra-area-prefix"` LSA appeared, BGP session established minutes
+    /// later). Safe as a blanket "redistribute every connected route" (not just the loopback):
+    /// this OSPF instance is IPv6-only (`version=3`), and the loopback bridge is the only interface
+    /// in this tool's scope with an IPv6 address at all - `home`/`uplink` are IPv4-only.
+    pub redistribute_connected: bool,
     pub disabled: bool,
 }
 

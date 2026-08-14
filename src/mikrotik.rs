@@ -287,6 +287,13 @@ pub async fn read_wireguard_peers(
         .collect()
 }
 
+/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for the general
+/// reason (a value-level change is a remove+add pair, not an update, and adding before removing
+/// risks RouterOS rejecting the add as a duplicate of the not-yet-removed old row). Not
+/// independently confirmed to fail the same way for peers specifically (only `ipv6 address` was
+/// caught live), but a WireGuard peer's identity is its public key, which - like an IP address -
+/// plausibly has its own device-wide uniqueness constraint, so the same defensive ordering applies
+/// here too.
 pub async fn apply_wireguard_peers(
     device: &MikrotikDevice,
     plan: &Plan<DesiredWireguardPeer>,
@@ -300,6 +307,9 @@ pub async fn apply_wireguard_peers(
             ("endpoint-address", d.endpoint_address.as_deref()),
             ("disabled", Some(if d.disabled { "yes" } else { "no" })),
         ]
+    }
+    for id in &plan.remove {
+        remove(device, WIREGUARD_PEERS_PATH, id).await?;
     }
     for d in &plan.add {
         let mut a = attrs(d);
@@ -328,9 +338,6 @@ pub async fn apply_wireguard_peers(
             a.push(("persistent-keepalive", Some(&ka_s)));
         }
         set(device, WIREGUARD_PEERS_PATH, id, &a).await?;
-    }
-    for id in &plan.remove {
-        remove(device, WIREGUARD_PEERS_PATH, id).await?;
     }
     Ok(())
 }
@@ -372,10 +379,17 @@ pub async fn read_ip_addresses(
         .collect()
 }
 
+/// Removals happen **before** adds - a value-level change on the same (interface, address) key
+/// isn't an in-place update (the diff key includes `address` itself, so a changed address is a
+/// remove+add pair, not an update) - see `apply_ipv6_addresses`'s doc comment for the exact
+/// failure this ordering avoids (confirmed live on `hq`).
 pub async fn apply_ip_addresses(
     device: &MikrotikDevice,
     plan: &Plan<DesiredIpAddress>,
 ) -> anyhow::Result<()> {
+    for id in &plan.remove {
+        remove(device, IP_ADDRESS_PATH, id).await?;
+    }
     for d in &plan.add {
         add(
             device,
@@ -396,9 +410,6 @@ pub async fn apply_ip_addresses(
             &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
         )
         .await?;
-    }
-    for id in &plan.remove {
-        remove(device, IP_ADDRESS_PATH, id).await?;
     }
     Ok(())
 }
@@ -566,23 +577,6 @@ pub async fn apply_loopback_bridge(
 
 const IPV6_ADDRESS_PATH: &str = "/ipv6/address";
 
-/// True if `address` (an `"<ip>/<prefix>"` string as stored in an `ipv6 address` row) falls in
-/// `fe80::/10` - RouterOS auto-generates an EUI-64 link-local on *every* interface (including
-/// `mesh-*` ones and `router-lo`, both inside this tool's naming footprint) the moment it comes
-/// up, entirely on its own, never something `routeros` created (`v2-v3.md` ловушка №2 - see
-/// `AGENTS.md`'s OSPFv3/RFC 8950 section). Without this exclusion, `read_ipv6_addresses`'s
-/// interface-name-based footprint match would wrongly treat every such auto-generated address as
-/// "ours but no longer desired" and propose deleting it on every single run - found via a real
-/// `--check --diff` against `hq`, breaking OSPFv3 neighbor formation (RouterOS's own link-local is
-/// what the OSPFv3 hello packets actually use).
-fn is_link_local_ipv6(address: &str) -> bool {
-    address
-        .split('/')
-        .next()
-        .and_then(|ip| ip.parse::<Ipv6Addr>().ok())
-        .is_some_and(|addr| addr.segments()[0] & 0xffc0 == 0xfe80)
-}
-
 fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
     let id = get_id(row)?;
     Ok(CurrentIpv6Address {
@@ -598,11 +592,25 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
     })
 }
 
-/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (the loopback bridge
-/// only - mesh-* interfaces get no static IPv6, RouterOS generates their link-local on its own) -
-/// see `diff::ipv6_addresses`'s doc comment on why an unfiltered read must never reach that
-/// function. `fe80::/10` rows are dropped unconditionally first, before the footprint match - see
-/// `is_link_local_ipv6`'s doc comment.
+/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (interface name in
+/// `our_interfaces`, or recognized by `diff::is_our_interface_name`) - see `diff::ipv6_addresses`'s
+/// doc comment on why an unfiltered read must never reach that function.
+///
+/// Link-local (`fe80::/10`) rows are **not** specially excluded here - both `router-lo` and
+/// `mesh-*` are in scope, so any auto-generated link-local RouterOS puts on one of them ends up
+/// "in footprint but not desired" and gets cleaned up like any other stale row. This matters for
+/// two different reasons per interface type:
+/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - confirmed live on `hq`, once
+///   a second mesh link existed, every one of them got the *identical* link-local, and RouterOS's
+///   own duplicate address detection then marked every one past the first `invalid`, breaking
+///   OSPFv3 adjacency on all of them. `config::desired_state` now applies the address explicitly
+///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed) rather
+///   than relying on auto-generation at all.
+/// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
+///   MAC), but once `routing ospf instance`'s `redistribute=connected` is set (see
+///   `apply_ospf_instance`), RouterOS redistributes *every* connected IPv6 route on that interface
+///   into OSPF - a link-local prefix has no business being treated as a globally routable
+///   destination, so nothing should be left there to redistribute by accident.
 pub async fn read_ipv6_addresses(
     device: &MikrotikDevice,
     our_interfaces: &[String],
@@ -611,10 +619,6 @@ pub async fn read_ipv6_addresses(
     rows.iter()
         .map(parse_ipv6_address)
         .filter(|r| match r {
-            // Link-local rows are excluded unconditionally, before the footprint match - see
-            // is_link_local_ipv6's doc comment. Never something this tool created, regardless of
-            // which interface RouterOS put it on.
-            Ok(a) if is_link_local_ipv6(&a.address) => false,
             Ok(a) => {
                 our_interfaces.iter().any(|i| i == &a.interface)
                     || crate::diff::is_our_interface_name(&a.interface)
@@ -624,10 +628,21 @@ pub async fn read_ipv6_addresses(
         .collect()
 }
 
+/// Removals happen **before** adds. `diff::ipv6_addresses` keys on `(interface, address)`, so a
+/// desired address value changing on an interface that already has *some* address (e.g. a
+/// `tunnel_networks`-driven `/128` -> `/64` prefix-length change on the same base address) is a
+/// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
+/// ("failure: already have such address") because the old, still-present entry shares the same
+/// base address, aborting the whole run with *nothing* converged. Confirmed live on `hq`: adding
+/// `fe80:c741:faa9::ff/64` while `fe80:c741:faa9::ff/128` (added by an earlier run, same base
+/// address) was still present on another interface failed exactly this way.
 pub async fn apply_ipv6_addresses(
     device: &MikrotikDevice,
     plan: &Plan<DesiredIpv6Address>,
 ) -> anyhow::Result<()> {
+    for id in &plan.remove {
+        remove(device, IPV6_ADDRESS_PATH, id).await?;
+    }
     for d in &plan.add {
         add(
             device,
@@ -653,9 +668,6 @@ pub async fn apply_ipv6_addresses(
         )
         .await?;
     }
-    for id in &plan.remove {
-        remove(device, IPV6_ADDRESS_PATH, id).await?;
-    }
     Ok(())
 }
 
@@ -680,6 +692,8 @@ pub async fn read_ospf_instance(
                         .unwrap_or_default()
                         .parse()
                         .unwrap_or(Ipv4Addr::UNSPECIFIED),
+                    redistribute_connected: get(row, "redistribute")
+                        .is_some_and(|v| v.split(',').any(|s| s == "connected")),
                     disabled: get_bool_flag(row, "disabled"),
                 },
             )));
@@ -709,6 +723,14 @@ pub async fn apply_ospf_instance(
                 ("name", Some(d.name.as_str())),
                 ("version", Some(&d.version.to_string())),
                 ("router-id", Some(&d.router_id.to_string())),
+                (
+                    "redistribute",
+                    Some(if d.redistribute_connected {
+                        "connected"
+                    } else {
+                        ""
+                    }),
+                ),
             ],
         )
         .await
@@ -721,6 +743,14 @@ pub async fn apply_ospf_instance(
                 &[
                     ("version", Some(&d.version.to_string())),
                     ("router-id", Some(&d.router_id.to_string())),
+                    (
+                        "redistribute",
+                        Some(if d.redistribute_connected {
+                            "connected"
+                        } else {
+                            ""
+                        }),
+                    ),
                 ],
             )
             .await
@@ -810,6 +840,7 @@ pub async fn read_ospf_interface_templates(
     rows.iter().map(parse_ospf_template).collect()
 }
 
+/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
 pub async fn apply_ospf_interface_templates(
     device: &MikrotikDevice,
     plan: &Plan<DesiredOspfInterfaceTemplate>,
@@ -834,6 +865,9 @@ pub async fn apply_ospf_interface_templates(
         a.push(("disabled", Some(if d.disabled { "yes" } else { "no" })));
         a
     }
+    for id in &plan.remove {
+        remove(device, OSPF_TEMPLATE_PATH, id).await?;
+    }
     for d in &plan.add {
         let mut a = attrs(d);
         let cost_s;
@@ -851,9 +885,6 @@ pub async fn apply_ospf_interface_templates(
             a.push(("cost", Some(&cost_s)));
         }
         set(device, OSPF_TEMPLATE_PATH, id, &a).await?;
-    }
-    for id in &plan.remove {
-        remove(device, OSPF_TEMPLATE_PATH, id).await?;
     }
     Ok(())
 }
@@ -883,10 +914,14 @@ pub async fn read_bgp_networks(
         .collect()
 }
 
+/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
 pub async fn apply_bgp_networks(
     device: &MikrotikDevice,
     plan: &Plan<DesiredAddressListEntry>,
 ) -> anyhow::Result<()> {
+    for id in &plan.remove {
+        remove(device, ADDRESS_LIST_PATH, id).await?;
+    }
     for d in &plan.add {
         add(
             device,
@@ -907,9 +942,6 @@ pub async fn apply_bgp_networks(
             &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
         )
         .await?;
-    }
-    for id in &plan.remove {
-        remove(device, ADDRESS_LIST_PATH, id).await?;
     }
     Ok(())
 }
@@ -1017,6 +1049,7 @@ pub async fn read_bgp_connections(
         .collect()
 }
 
+/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
 pub async fn apply_bgp_connections(
     device: &MikrotikDevice,
     plan: &Plan<DesiredBgpConnection>,
@@ -1031,6 +1064,9 @@ pub async fn apply_bgp_connections(
             ("output.network", Some(d.output_network.as_str())),
             ("disabled", Some(if d.disabled { "yes" } else { "no" })),
         ]
+    }
+    for id in &plan.remove {
+        remove(device, BGP_CONNECTION_PATH, id).await?;
     }
     for d in &plan.add {
         let mut a = attrs(d);
@@ -1050,9 +1086,6 @@ pub async fn apply_bgp_connections(
         a.push(("local.address", Some(&local_s)));
         a.push(("remote.address", Some(&remote_s)));
         set(device, BGP_CONNECTION_PATH, id, &a).await?;
-    }
-    for id in &plan.remove {
-        remove(device, BGP_CONNECTION_PATH, id).await?;
     }
     Ok(())
 }
@@ -1182,16 +1215,6 @@ mod tests {
         assert_eq!(a.address, "fd00::1/128");
         assert_eq!(a.interface, "router-lo");
         assert!(!a.advertise);
-    }
-
-    #[test]
-    fn recognizes_link_local_addresses_regardless_of_prefix_length() {
-        // Real fe80::/10 addresses RouterOS auto-generates via EUI-64 - confirmed against a real
-        // device via --check --diff (see is_link_local_ipv6's doc comment).
-        assert!(is_link_local_ipv6("fe80::bff6:4220:a333:c1d1/64"));
-        assert!(is_link_local_ipv6("fe80::f044:89ff:fe2c:3247/64"));
-        assert!(!is_link_local_ipv6("fd00::1/128"));
-        assert!(!is_link_local_ipv6("fd3d:c741:faa9::a3e:ff/128"));
     }
 
     #[test]

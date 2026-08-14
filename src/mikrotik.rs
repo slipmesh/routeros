@@ -414,14 +414,13 @@ pub async fn apply_ip_addresses(
     Ok(())
 }
 
-/// This device's own physically-connected subnets (every `ip address` interface that isn't a
-/// `mesh-*` tunnel or the loopback bridge), normalized to network base - the BGP-announced prefix
-/// set is computed fresh from this on every run, never configured (see AGENTS.md).
-/// Reads every `ip address` row on an interface that isn't ours (`mesh-*`/orphaned raw id) or the
-/// loopback bridge - candidates for `config::desired_state`'s `direct_interfaces`/`learn`
-/// filtering, which owns the policy of what actually gets announced. This function is a dumb
-/// reader: it returns every physically-connected `(interface, network)` pair it finds, filtering
-/// nothing but our own infrastructure.
+/// This device's own directly-connected subnets (every `ip address` row except an orphaned raw id
+/// and the loopback bridge itself), normalized to network base - the BGP-announced prefix set is
+/// computed fresh from this on every run, never configured (see AGENTS.md). Candidates for
+/// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
+/// actually gets announced - this function is a dumb reader, filtering nothing but our own
+/// infrastructure's dead weight (a `mesh-*` interface's own address is a legitimate candidate now
+/// that `cluster.tunnel_networks` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
@@ -430,10 +429,14 @@ pub async fn read_physically_connected_prefixes(
     let mut prefixes = Vec::new();
     for row in &rows {
         let a = parse_ip_address(row)?;
-        // Same recognizer as read_ip_addresses: excludes both live mesh-* interfaces and an
-        // address orphaned on a deleted one's raw internal id - neither is a real physically-
-        // connected LAN prefix worth announcing.
-        if crate::diff::is_our_interface_name(&a.interface) || a.interface == loopback_bridge {
+        // Unlike read_ip_addresses's footprint check, `mesh-*` interfaces are **not** excluded
+        // here: `cluster.tunnel_networks.ipv4` (see config.rs) can give one a real, non-link-local
+        // address meant to be announced when the node opts it into `router.direct_interfaces`
+        // (e.g. `["home", "mesh-*"]`) - config::desired_state's own direct_interfaces/learn
+        // matching is what actually decides whether any given prefix gets announced, this is just
+        // the candidate list. Only a raw internal id orphaned by a deleted mesh-* interface (e.g.
+        // `*16`) and the loopback bridge itself are excluded - neither is ever announce-worthy.
+        if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == loopback_bridge {
             continue;
         }
         match address_to_network(&a.address) {

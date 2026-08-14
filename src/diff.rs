@@ -124,7 +124,11 @@ pub fn is_our_interface_name(interface: &str) -> bool {
     interface.starts_with("mesh-") || is_raw_orphan_id(interface)
 }
 
-fn is_raw_orphan_id(interface: &str) -> bool {
+/// True for a leftover raw internal id (e.g. `*16`) an address gets orphaned on after this tool
+/// deletes the `mesh-*` interface it used to belong to - never a real physically-connected LAN
+/// prefix worth announcing, unlike a `mesh-*` interface's own address (see
+/// `mikrotik::read_physically_connected_prefixes`, which excludes only this, not `mesh-*` itself).
+pub fn is_raw_orphan_id(interface: &str) -> bool {
     interface
         .strip_prefix('*')
         .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit()))

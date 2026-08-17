@@ -1,0 +1,93 @@
+# Triggered by a `vX.Y.Z` tag. Unlike the five image-pipeline repos, this produces a plain
+# binary, not an OCI image - no Docker/buildx/GHCR involved. Cross-compiles for linux/amd64 and
+# linux/arm64 via cargo-zigbuild (a true cross-compiler, avoiding the QEMU-emulated `cargo build`
+# segfault noted in cni-config's own release.yml) and attaches both binaries directly to a GitHub
+# Release, mirroring how cni-config attaches deploy/daemonset.yaml.
+#
+# Cargo.toml's awg/router dependencies are local path deps on ../talos-extensions (no git rev
+# pin yet - see AGENTS.md), so this needs the same sibling checkout as
+# router/nftables/awg-extension's own release.yml, checked out relative to `working-directory:
+# routeros`.
+name: Release binaries
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            rust_target: x86_64-unknown-linux-musl
+          - arch: arm64
+            rust_target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: routeros
+
+      # Pinned to talos-extensions' default branch tip - Cargo.toml's awg/router path deps have
+      # no git rev pin yet (see AGENTS.md), matching what a local dev build already does with a
+      # plain `../talos-extensions` sibling checkout.
+      - uses: actions/checkout@v4
+        with:
+          repository: slipmesh/talos-extensions
+          path: talos-extensions
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: routeros
+          key: ${{ matrix.rust_target }}
+
+      - uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Cross-compile
+        working-directory: routeros
+        run: cargo zigbuild --release --target ${{ matrix.rust_target }}
+
+      - name: Stage binary under its release name
+        run: |
+          mkdir -p /tmp/dist
+          cp routeros/target/${{ matrix.rust_target }}/release/routeros /tmp/dist/routeros-linux-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routeros-linux-${{ matrix.arch }}
+          path: /tmp/dist/routeros-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/dist
+          pattern: routeros-linux-*
+          merge-multiple: true
+
+      - name: Create GitHub Release with both binaries attached
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" /tmp/dist/routeros-linux-amd64 /tmp/dist/routeros-linux-arm64 \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

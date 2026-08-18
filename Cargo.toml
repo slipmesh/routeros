@@ -10,6 +10,10 @@ license = "AGPL-3.0-only"
 description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches from mesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
 
+[[bin]]
+name = "slipmesh-routeros"
+path = "src/main.rs"
+
 [dependencies]
 # Local path deps: talos-extensions has no git remote yet. Switch to a pinned git rev (mirroring
 # how slipmesh-core used to be pinned) once one exists - see AGENTS.md.

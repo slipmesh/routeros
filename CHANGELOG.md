@@ -34,6 +34,7 @@ and follows [Semantic Versioning](https://semver.org/).
 - Presence-style RouterOS flags need contains_key, not get()
 - Apply mesh IPv4/link-local addresses, redistribute connected into OSPF, remove-before-add ordering
 - Stop excluding mesh-* interfaces from the BGP announce candidate set
+- Replace real node names in test/doc examples with placeholders
 
 ### Miscellaneous 🧹
 

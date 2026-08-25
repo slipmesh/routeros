@@ -20,6 +20,7 @@ path = "src/main.rs"
 awg = { path = "../talos-extensions/awg" }
 router = { path = "../talos-extensions/router" }
 
+base64 = "0.22"
 mikrotik-rs = { version = "0.8.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

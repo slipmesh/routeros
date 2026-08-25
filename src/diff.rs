@@ -159,6 +159,32 @@ impl HasId for CurrentWireguardInterface {
     }
 }
 
+/// WireGuard clamps a Curve25519 private key the moment it loads one - byte 0 `&= 248`, byte 31
+/// `&= 127` then `|= 64` - and RouterOS hands back the clamped form on read. `patches generate`
+/// emits the key as generated, unclamped, so comparing the two byte-for-byte never matches: the
+/// diff recomputes the same "update" on every run and each apply rewrites a live WireGuard
+/// interface for nothing. That is not cosmetic - rewriting an interface with an established peer
+/// and an OSPF adjacency on it is the single most disruptive operation this tool performs.
+///
+/// Clamping both sides compares the keys by identity rather than by representation. The two are
+/// cryptographically the same key (X25519 clamps the scalar before use either way, so the public
+/// key is identical), and clamping an already-clamped key is a no-op. Anything that isn't a
+/// 32-byte key is returned untouched - better a spurious update than silently mangling a value
+/// this function doesn't understand.
+fn clamp_wg_key(b64: &str) -> String {
+    use base64::Engine as _;
+    let engine = base64::engine::general_purpose::STANDARD;
+    match engine.decode(b64) {
+        Ok(mut key) if key.len() == 32 => {
+            key[0] &= 248;
+            key[31] &= 127;
+            key[31] |= 64;
+            engine.encode(key)
+        }
+        _ => b64.to_string(),
+    }
+}
+
 pub fn wireguard_interfaces(
     current: &[CurrentWireguardInterface],
     desired: &[DesiredWireguardInterface],
@@ -171,10 +197,39 @@ pub fn wireguard_interfaces(
         |c| c.id.clone(),
         |c, d| {
             c.listen_port == d.listen_port
-                && c.private_key_b64 == d.private_key_b64
+                && clamp_wg_key(&c.private_key_b64) == clamp_wg_key(&d.private_key_b64)
                 && c.disabled == d.disabled
         },
     )
+}
+
+/// The exact pair observed live on hq: `patches generate`'s key as written into the patch file,
+/// and what RouterOS returned for the same interface. Before clamping these compared unequal and
+/// the tool recomputed the same update forever.
+#[cfg(test)]
+mod wg_key_tests {
+    use super::*;
+
+    const GENERATED: &str = "wj9IeKINz7myZ4I0xiX6mxe3c76gc0KEE8cU5oFTDvY=";
+    const AS_STORED: &str = "wD9IeKINz7myZ4I0xiX6mxe3c76gc0KEE8cU5oFTDnY=";
+
+    #[test]
+    fn clamping_makes_a_generated_key_match_what_routeros_stores() {
+        assert_ne!(GENERATED, AS_STORED, "the two differ verbatim - that is the bug");
+        assert_eq!(clamp_wg_key(GENERATED), AS_STORED);
+    }
+
+    #[test]
+    fn clamping_an_already_clamped_key_is_a_no_op() {
+        assert_eq!(clamp_wg_key(AS_STORED), AS_STORED);
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_32_byte_key_is_left_alone() {
+        for odd in ["", "not base64!", "AAAA"] {
+            assert_eq!(clamp_wg_key(odd), odd);
+        }
+    }
 }
 
 // ── interface wireguard peers (exclusive) ──

@@ -191,6 +191,26 @@ pub fn desired_state(
         advertise: false,
         disabled: false,
     }];
+    // OSPFv3 runs entirely over link-local addresses, and RouterOS will not originate an
+    // Intra-Area-Prefix-LSA for an interface that has none - it falls back to advertising the
+    // loopback only through `redistribute=connected`, i.e. as an AS-external LSA. BIRD's kernel
+    // export on the Talos side accepts intra-area OSPF routes, so an external-only advertisement
+    // is learned and then never installed: every node holds a Full adjacency with this device and
+    // none of them can route to its loopback, leaving its iBGP sessions down in both directions.
+    // Confirmed live on hq - adding this address made RouterOS originate the intra-area prefix LSA
+    // and all five sessions came up within seconds.
+    //
+    // Same address the mesh interfaces carry (one link-local per node by construction, see the
+    // loop above), so it is taken from there rather than recomputed - if that convention ever
+    // changes, both follow it together.
+    if let Some(link_local) = mesh_link_locals.first().map(|a| a.address.clone()) {
+        ip_v6_addresses.push(DesiredIpv6Address {
+            address: link_local,
+            interface: LOOPBACK_BRIDGE.to_string(),
+            advertise: false,
+            disabled: false,
+        });
+    }
     ip_v6_addresses.extend(mesh_link_locals);
 
     let mut ospf_interface_templates = vec![DesiredOspfInterfaceTemplate {
@@ -443,10 +463,18 @@ mod tests {
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
-        // Loopback bridge's own /128 plus one entry per mesh interface - the identical literal is
-        // applied to both, matching what patches generate already computes for the Linux side
-        // (confirmed live on hq: fine with every mesh interface genuinely up simultaneously).
-        assert_eq!(state.ip_v6_addresses.len(), 3);
+        // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
+        // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
+        // entry per mesh interface: the identical literal is applied to both, matching what
+        // patches generate already computes for the Linux side (confirmed live on hq: fine with
+        // every mesh interface genuinely up simultaneously).
+        assert_eq!(state.ip_v6_addresses.len(), 4);
+        assert!(
+            state
+                .ip_v6_addresses
+                .iter()
+                .any(|a| a.interface == LOOPBACK_BRIDGE && a.address == "fe80::a3e:ff/64")
+        );
         assert!(
             state
                 .ip_v6_addresses
@@ -490,8 +518,9 @@ mod tests {
                 .iter()
                 .any(|a| a.interface == "mesh-2" && a.address == "10.62.1.255/32")
         );
-        // The v6 entry still goes to ip_v6_addresses, not ip_addresses.
-        assert_eq!(state.ip_v6_addresses.len(), 2);
+        // The v6 entry still goes to ip_v6_addresses, not ip_addresses - loopback /128, the
+        // loopback bridge's copy of the link-local, and the mesh interface's own.
+        assert_eq!(state.ip_v6_addresses.len(), 3);
     }
 
     #[test]

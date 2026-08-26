@@ -217,7 +217,7 @@ pub async fn read_wireguard_interfaces(
 /// mesh-* interface renamed to the OSPFv3/RFC 8950 migration's `short_id`-based naming) is a
 /// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
 /// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
-/// with a "Listen port already used" comment - confirmed on a real device (`hq`) during the
+/// with a "Listen port already used" comment - confirmed on a real device during the
 /// migration's live rollout, where every renamed link hit this. Removing first frees the port
 /// before anything tries to claim it again.
 pub async fn apply_wireguard_interfaces(
@@ -382,7 +382,7 @@ pub async fn read_ip_addresses(
 /// Removals happen **before** adds - a value-level change on the same (interface, address) key
 /// isn't an in-place update (the diff key includes `address` itself, so a changed address is a
 /// remove+add pair, not an update) - see `apply_ipv6_addresses`'s doc comment for the exact
-/// failure this ordering avoids (confirmed live on `hq`).
+/// failure this ordering avoids (confirmed live on a real device).
 pub async fn apply_ip_addresses(
     device: &MikrotikDevice,
     plan: &Plan<DesiredIpAddress>,
@@ -603,7 +603,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 /// `mesh-*` are in scope, so any auto-generated link-local RouterOS puts on one of them ends up
 /// "in footprint but not desired" and gets cleaned up like any other stale row. This matters for
 /// two different reasons per interface type:
-/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - confirmed live on `hq`, once
+/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - confirmed live on a real device, once
 ///   a second mesh link existed, every one of them got the *identical* link-local, and RouterOS's
 ///   own duplicate address detection then marked every one past the first `invalid`, breaking
 ///   OSPFv3 adjacency on all of them. `config::desired_state` now applies the address explicitly
@@ -636,7 +636,7 @@ pub async fn read_ipv6_addresses(
 /// `tunnel_networks`-driven `/128` -> `/64` prefix-length change on the same base address) is a
 /// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
 /// ("failure: already have such address") because the old, still-present entry shares the same
-/// base address, aborting the whole run with *nothing* converged. Confirmed live on `hq`: adding
+/// base address, aborting the whole run with *nothing* converged. Confirmed live on a real device: adding
 /// `fe80:c741:faa9::ff/64` while `fe80:c741:faa9::ff/128` (added by an earlier run, same base
 /// address) was still present on another interface failed exactly this way.
 pub async fn apply_ipv6_addresses(

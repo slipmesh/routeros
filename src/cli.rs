@@ -1,4 +1,4 @@
-//! CLI surface - see AGENTS.md: `routeros --node=hq [--patches-dir=patches] [--check] [--diff]`,
+//! CLI surface - see AGENTS.md: `routeros --node=router1 [--patches-dir=patches] [--check] [--diff]`,
 //! modeled on `ansible-playbook --check --diff`.
 
 use clap::Parser;

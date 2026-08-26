@@ -2,7 +2,7 @@
 name = "routeros"
 version = "0.1.0"
 edition = "2024"
-authors = ["Evgeniy Slizevich <evgeniy@slizevich.net>"]
+authors = ["slipmesh"]
 # AGPL-3.0-only, not MIT/Apache-2.0 like the sibling slipmesh-operators/slipmesh-core repos: this
 # binary depends on mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio)
 # is AGPL-3.0-only - any binary linking it must itself be AGPL-3.0-compatible. See AGENTS.md.

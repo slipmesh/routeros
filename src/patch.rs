@@ -90,7 +90,7 @@ mod tests {
 
     const AWG_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: awg\nconfigFiles:\n  - mountPath: /etc/talos-extensions/awg.yaml\n    content: |\n      interfaces: []\n";
     const ROUTER_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: router\nconfigFiles:\n  - mountPath: /etc/talos-extensions/router.yaml\n    content: |\n      node:\n        loopback_addresses: [\"10.0.0.1/32\", \"fd00::1/128\"]\n      bgp_as: 64512\n      ospf_interfaces: []\n      direct_interfaces: []\n      learn: []\n      announce: []\n";
-    const MIKROTIK_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: mikrotik\nconfigFiles:\n  - mountPath: /etc/talos-extensions/mikrotik.yaml\n    content: |\n      host: hq.int.example.com\n      port: 8729\n      username: ansible\n      password: hunter2\n";
+    const MIKROTIK_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: mikrotik\nconfigFiles:\n  - mountPath: /etc/talos-extensions/mikrotik.yaml\n    content: |\n      host: router1.example.com\n      port: 8729\n      username: ansible\n      password: hunter2\n";
     const FOREIGN_DOC: &str = "machine:\n  install:\n    disk: /dev/vda\n";
 
     fn full_file() -> String {
@@ -101,12 +101,12 @@ mod tests {
     fn parses_a_full_patch_file() {
         let dir = std::env::temp_dir().join(format!("routeros-patch-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("hq.yaml");
+        let path = dir.join("router1.yaml");
         std::fs::write(&path, full_file()).unwrap();
 
         let patch = read_patch_file(&path).unwrap();
         assert_eq!(patch.router.bgp_as, 64512);
-        assert_eq!(patch.credentials.host, "hq.int.example.com");
+        assert_eq!(patch.credentials.host, "router1.example.com");
         assert!(patch.awg.interfaces.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn nonexistent_file_is_an_error() {
-        assert!(read_patch_file(Path::new("/nonexistent/hq.yaml")).is_err());
+        assert!(read_patch_file(Path::new("/nonexistent/router1.yaml")).is_err());
     }
 
     #[test]

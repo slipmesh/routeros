@@ -32,7 +32,7 @@ mod validate_endpoint_tests {
 
     #[test]
     fn accepts_hostnames_and_addresses() {
-        assert!(validate_endpoint("hq.int.example.com").is_ok());
+        assert!(validate_endpoint("router1.example.com").is_ok());
         assert!(validate_endpoint("192.168.88.1").is_ok());
         assert!(validate_endpoint("2001:db8::1").is_ok());
     }
@@ -44,14 +44,14 @@ mod validate_endpoint_tests {
 
     #[test]
     fn rejects_embedded_semicolon_and_whitespace() {
-        assert!(validate_endpoint("hq.example.com;evil").is_err());
-        assert!(validate_endpoint("hq.example.com evil").is_err());
+        assert!(validate_endpoint("router1.example.com;evil").is_err());
+        assert!(validate_endpoint("router1.example.com evil").is_err());
     }
 
     #[test]
     fn rejects_quotes_and_control_characters() {
-        assert!(validate_endpoint("hq.example.com\"").is_err());
-        assert!(validate_endpoint("hq.example.com\n").is_err());
-        assert!(validate_endpoint("hq.example.com\0").is_err());
+        assert!(validate_endpoint("router1.example.com\"").is_err());
+        assert!(validate_endpoint("router1.example.com\n").is_err());
+        assert!(validate_endpoint("router1.example.com\0").is_err());
     }
 }

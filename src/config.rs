@@ -121,7 +121,7 @@ pub fn desired_state(
         // reused verbatim (same per-node link-local convention as the loopback bridge's own
         // address; see `router::config`'s addressing doc comments) - applying it explicitly here
         // rather than relying on RouterOS's own auto-generation, which isn't reliable for a
-        // WireGuard interface (confirmed live on hq: with only one mesh interface enabled it's
+        // WireGuard interface (confirmed live on a real device: with only one mesh interface enabled it's
         // fine, but auto-generation produced the *identical* address on every interface once more
         // existed, and RouterOS's own duplicate address detection marked every one past the first
         // `invalid`). Can carry more than one IPv6 entry now (`cluster.tunnel_networks.ipv6`, a
@@ -197,7 +197,7 @@ pub fn desired_state(
     // export on the Talos side accepts intra-area OSPF routes, so an external-only advertisement
     // is learned and then never installed: every node holds a Full adjacency with this device and
     // none of them can route to its loopback, leaving its iBGP sessions down in both directions.
-    // Confirmed live on hq - adding this address made RouterOS originate the intra-area prefix LSA
+    // Confirmed live on a real device - adding this address made RouterOS originate the intra-area prefix LSA
     // and all five sessions came up within seconds.
     //
     // Same address the mesh interfaces carry (one link-local per node by construction, see the
@@ -466,7 +466,7 @@ mod tests {
         // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
         // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
         // entry per mesh interface: the identical literal is applied to both, matching what
-        // patches generate already computes for the Linux side (confirmed live on hq: fine with
+        // patches generate already computes for the Linux side (confirmed live on a real device: fine with
         // every mesh interface genuinely up simultaneously).
         assert_eq!(state.ip_v6_addresses.len(), 4);
         assert!(

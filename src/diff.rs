@@ -203,7 +203,7 @@ pub fn wireguard_interfaces(
     )
 }
 
-/// The exact pair observed live on hq: `patches generate`'s key as written into the patch file,
+/// The exact pair observed live on a real device: `patches generate`'s key as written into the patch file,
 /// and what RouterOS returned for the same interface. Before clamping these compared unequal and
 /// the tool recomputed the same update forever.
 #[cfg(test)]
@@ -215,7 +215,10 @@ mod wg_key_tests {
 
     #[test]
     fn clamping_makes_a_generated_key_match_what_routeros_stores() {
-        assert_ne!(GENERATED, AS_STORED, "the two differ verbatim - that is the bug");
+        assert_ne!(
+            GENERATED, AS_STORED,
+            "the two differ verbatim - that is the bug"
+        );
         assert_eq!(clamp_wg_key(GENERATED), AS_STORED);
     }
 
@@ -536,7 +539,7 @@ pub struct DesiredOspfInstance {
     /// `redistribute=connected` - without it, RouterOS's `passive` flag on an interface-template
     /// suppresses hellos (adjacencies still form on non-passive interfaces) but does **not**
     /// originate an Intra-Area-Prefix-LSA for the passive interface's own connected route, unlike
-    /// BIRD's `stub yes` on the Linux side. Confirmed live on `hq`: with only `passive` set,
+    /// BIRD's `stub yes` on the Linux side. Confirmed live on a real device: with only `passive` set,
     /// `routing ospf lsa print` showed zero `type="prefix"` LSAs self-originated for the loopback
     /// bridge's own ULA `/128` - no other node could ever compute a route to it, so iBGP (which
     /// dials that same loopback) could never establish. Setting `redistribute=connected` fixed it
@@ -854,7 +857,7 @@ mod wireguard_peers_tests {
 
     #[test]
     fn nat_peer_has_no_endpoint_or_keepalive() {
-        let d = desired("mesh-hq", "hq", None);
+        let d = desired("mesh-router1", "router1", None);
         assert_eq!(d.endpoint_address, None);
         assert_eq!(d.persistent_keepalive, None);
     }

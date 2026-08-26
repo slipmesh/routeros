@@ -1,0 +1,6 @@
+# Fingerprints of confirmed false positives, checked one by one. A secret never
+# belongs here - only a finding that is not one.
+
+# A struct field comparison in the WireGuard interface diff: the generic-api-key rule
+# matches the field's own name, there is no value on that line.
+648cf4459126c2f558ef7c5e51074d0858102371:src/diff.rs:generic-api-key:152

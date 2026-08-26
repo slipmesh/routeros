@@ -3,9 +3,9 @@ name = "routeros"
 version = "0.1.0"
 edition = "2024"
 authors = ["slipmesh"]
-# AGPL-3.0-only, not MIT/Apache-2.0 like the sibling slipmesh-operators/slipmesh-core repos: this
-# binary depends on mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio)
-# is AGPL-3.0-only - any binary linking it must itself be AGPL-3.0-compatible. See AGENTS.md.
+# AGPL-3.0-only, unlike every other repository in this organization: this binary depends on
+# mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio) is AGPL-3.0-only
+# - any binary linking it must itself be AGPL-3.0-compatible.
 license = "AGPL-3.0-only"
 description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches from mesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
@@ -15,8 +15,10 @@ name = "slipmesh-routeros"
 path = "src/main.rs"
 
 [dependencies]
-# Local path deps: talos-extensions has no git remote yet. Switch to a pinned git rev (mirroring
-# how slipmesh-core used to be pinned) once one exists - see AGENTS.md.
+# Local path deps on a sibling talos-extensions checkout, so a build here always compiles against
+# that repository's current source - this tool has to agree with the daemons field for field, and
+# depends on their own config types rather than restating them. A pinned git rev would decouple the
+# two; until then, both this repo's release workflow and a local build need the checkout present.
 awg = { path = "../talos-extensions/awg" }
 router = { path = "../talos-extensions/router" }
 

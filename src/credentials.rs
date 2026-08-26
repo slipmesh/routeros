@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-const DEFAULT_PORT: u16 = 8729; // RouterOS API-SSL default - TLS is mandatory, see AGENTS.md.
+const DEFAULT_PORT: u16 = 8729; // RouterOS API-SSL default - TLS is mandatory.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouterCredentials {

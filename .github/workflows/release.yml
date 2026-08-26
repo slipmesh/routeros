@@ -5,7 +5,7 @@
 # Release, mirroring how cni-config attaches deploy/daemonset.yaml.
 #
 # Cargo.toml's awg/router dependencies are local path deps on ../talos-extensions (no git rev
-# pin yet - see AGENTS.md), so this needs the same sibling checkout as
+# pin yet), so this needs the same sibling checkout as
 # router/nftables/awg-extension's own release.yml, checked out relative to `working-directory:
 # routeros`.
 name: Release binaries
@@ -35,7 +35,7 @@ jobs:
           path: routeros
 
       # Pinned to talos-extensions' default branch tip - Cargo.toml's awg/router path deps have
-      # no git rev pin yet (see AGENTS.md), matching what a local dev build already does with a
+      # no git rev pin yet, matching what a local dev build already does with a
       # plain `../talos-extensions` sibling checkout.
       - uses: actions/checkout@v4
         with:

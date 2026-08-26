@@ -3,7 +3,7 @@
 //! `mesh.yaml`) into RouterOS's own tables. The RouterOS analogue of what `awg`'s own netlink
 //! converger and `router::bird::render` do for a Linux node, just targeting the RouterOS API
 //! instead of the kernel/a BIRD config file. Touches neither `patch::read_patch_file` nor
-//! `mikrotik_rs` - see AGENTS.md's "keep I/O in thin shims" convention.
+//! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
 use crate::cidr;
 use crate::diff::{

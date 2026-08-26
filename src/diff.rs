@@ -2,7 +2,7 @@
 //! (as parsed by `mikrotik.rs`'s `read_*` functions) and the desired rows (as computed by
 //! `config::desired_state`), produce an add/update/remove [`Plan`].
 //!
-//! **Exclusive vs. shared tables** (see AGENTS.md): the diff logic below is identical for both -
+//! **Exclusive vs. shared tables**: the diff logic below is identical for both -
 //! the difference is entirely in what `current` the caller passes in. For an exclusive table
 //! (`interface wireguard[/peers]`, `routing ospf interface-template`, `routing bgp connection`),
 //! nothing else on the device ever writes it, so `current` is simply the whole table and "remove
@@ -468,7 +468,7 @@ pub fn ospf_interface_templates(
             // all four) - RouterOS's `/print` still echoes back its resolved default value (e.g.
             // `type=broadcast, cost=1`) even though nothing configured it, so comparing `None !=
             // Some(_)` directly would flag a phantom "update" on every single run. Confirmed
-            // against a real device - see AGENTS.md.
+            // against a real device.
             c.area == d.area
                 && d.type_.as_ref().is_none_or(|t| c.type_.as_ref() == Some(t))
                 && d.cost.is_none_or(|v| c.cost == Some(v))

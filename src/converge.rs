@@ -1,9 +1,9 @@
 //! Orchestrates the fixed, dependency-correct RouterOS convergence order for one run: read
 //! current state -> diff -> (optionally) apply, table by table. Thin glue - correctness lives in
-//! `diff.rs`'s tests, not here (see AGENTS.md's "no mocking framework" convention: this module's
-//! own correctness is checked in the manual live-device pass, not by unit tests).
+//! `diff.rs`'s tests, not here: there is no mocking framework anywhere in this ecosystem, so this
+//! module's own correctness is checked in the manual live-device pass rather than by unit tests.
 //!
-//! Order (see AGENTS.md for the full exclusive-vs-shared rationale):
+//! Order - dependency-correct, and remove-before-add within each exclusive table:
 //! 1. `interface list member` stale removal (before any interface is deleted).
 //! 2. `interface wireguard` (exclusive).
 //! 3. `interface bridge` (loopback, singleton) - before its own address can be set.

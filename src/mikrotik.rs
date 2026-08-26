@@ -1,13 +1,13 @@
 //! Thin RouterOS device shim: TLS connection, and per-table `read_*`/`apply_*` functions whose
-//! types are exactly `diff.rs`'s `Current*`/`Plan<Desired*>` - see AGENTS.md's "keep I/O thin,
-//! test the pure layer" convention. Row-parsing sub-pieces are still plain functions with their
-//! own unit tests; the actual socket I/O is verified manually against a real device instead (no
-//! mocking framework exists anywhere in this ecosystem - see AGENTS.md).
+//! types are exactly `diff.rs`'s `Current*`/`Plan<Desired*>`: I/O stays thin here so the pure
+//! layer can carry the tests. Row-parsing sub-pieces are still plain functions with their own unit
+//! tests; the actual socket I/O is verified manually against a real device instead, since no
+//! mocking framework exists anywhere in this ecosystem.
 //!
 //! **Attribute-name/schema assumptions below are ported from the ansible `mesh`/`router` roles'
 //! own RouterOS API usage and MikroTik's documented API property names - not independently
 //! confirmed against a live device in this session. Verify against a real RouterOS device during
-//! the manual test pass (see AGENTS.md) before trusting this against production hardware,
+//! the manual test pass before trusting this against production hardware,
 //! particularly `/interface/wireguard/peers`' `comment` field (used here as the peer-label
 //! attribute, since that table has no dedicated `name` property).**
 
@@ -67,8 +67,8 @@ fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
 
 /// RouterOS echoes `persistent-keepalive` back with a trailing time-unit suffix (e.g. `"25s"`),
 /// even though a bare integer (interpreted as seconds) is accepted when *setting* it - confirmed
-/// against a real device (see AGENTS.md's note that this attribute's exact wire shape wasn't
-/// independently verified before). `hello-interval`/`dead-interval` are stored as raw strings
+/// against a real device, this attribute's exact wire shape not having been independently
+/// verified before. `hello-interval`/`dead-interval` are stored as raw strings
 /// elsewhere and don't need this - only this field is modeled as a plain `u16` seconds count.
 fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
     get(row, key)
@@ -81,7 +81,7 @@ fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>
 }
 
 /// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
-/// never `tls_insecure()`, see AGENTS.md. Panics only via `expect` on a missing crypto provider,
+/// never `tls_insecure()`. Panics only via `expect` on a missing crypto provider,
 /// matching `mikrotik-rs`'s own documented requirement that the application install one before
 /// any `tls_config()` call - `run.rs`/`main.rs` does this once at startup.
 pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice> {
@@ -416,7 +416,7 @@ pub async fn apply_ip_addresses(
 
 /// This device's own directly-connected subnets (every `ip address` row except an orphaned raw id
 /// and the loopback bridge itself), normalized to network base - the BGP-announced prefix set is
-/// computed fresh from this on every run, never configured (see AGENTS.md). Candidates for
+/// computed fresh from this on every run, never configured. Candidates for
 /// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
 /// actually gets announced - this function is a dumb reader, filtering nothing but our own
 /// infrastructure's dead weight (a `mesh-*` interface's own address is a legitimate candidate now
@@ -1195,7 +1195,7 @@ mod tests {
         // The exact wire shape confirmed against a real device: a passive row has the `passive`
         // key present with an empty/`None` inner value (`=passive=`), not a `"true"` string - a
         // plain `row.get("passive")` can't tell that apart from the key being absent entirely,
-        // which is exactly the bug this regression test catches (see AGENTS.md/commit history).
+        // which is exactly the bug this regression test catches.
         let mut r = row(&[
             (".id", "*1"),
             ("interfaces", "router-lo"),

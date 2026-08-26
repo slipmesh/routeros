@@ -1,5 +1,5 @@
 //! The one-shot pipeline: read the patch file once, connect to the device once, converge, exit.
-//! No Kubernetes, no reflectors/watch, no state carried between invocations - see AGENTS.md.
+//! No Kubernetes, no reflectors/watch, no state carried between invocations.
 
 use crate::cli::Cli;
 use crate::config;

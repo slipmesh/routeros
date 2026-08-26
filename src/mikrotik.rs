@@ -5,9 +5,9 @@
 //! mocking framework exists anywhere in this ecosystem.
 //!
 //! **Attribute-name/schema assumptions below are ported from the ansible `mesh`/`router` roles'
-//! own RouterOS API usage and MikroTik's documented API property names - not independently
-//! confirmed against a live device in this session. Verify against a real RouterOS device during
-//! the manual test pass before trusting this against production hardware,
+//! own RouterOS API usage and MikroTik's documented API property names, not independently
+//! verified against a live device. Verify them on real hardware before trusting this in
+//! production,
 //! particularly `/interface/wireguard/peers`' `comment` field (used here as the peer-label
 //! attribute, since that table has no dedicated `name` property).**
 
@@ -217,9 +217,8 @@ pub async fn read_wireguard_interfaces(
 /// mesh-* interface renamed to the OSPFv3/RFC 8950 migration's `short_id`-based naming) is a
 /// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
 /// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
-/// with a "Listen port already used" comment - confirmed on a real device during the
-/// migration's live rollout, where every renamed link hit this. Removing first frees the port
-/// before anything tries to claim it again.
+/// with a "Listen port already used" comment. Removing first frees the port before anything
+/// tries to claim it again.
 pub async fn apply_wireguard_interfaces(
     device: &MikrotikDevice,
     plan: &Plan<DesiredWireguardInterface>,
@@ -382,7 +381,7 @@ pub async fn read_ip_addresses(
 /// Removals happen **before** adds - a value-level change on the same (interface, address) key
 /// isn't an in-place update (the diff key includes `address` itself, so a changed address is a
 /// remove+add pair, not an update) - see `apply_ipv6_addresses`'s doc comment for the exact
-/// failure this ordering avoids (confirmed live on a real device).
+/// failure this ordering avoids.
 pub async fn apply_ip_addresses(
     device: &MikrotikDevice,
     plan: &Plan<DesiredIpAddress>,
@@ -586,9 +585,8 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
         address: get_required(row, "address", &id)?.to_string(),
         interface: get_required(row, "interface", &id)?.to_string(),
         // Assumed boolean-flag-shaped exactly like `disabled` (explicit "true"/"false" on read,
-        // "yes"/"no" accepted on write) - not independently confirmed against a real device in
-        // this session, same caveat as this module's other unverified property names (see the
-        // module doc comment).
+        // "yes"/"no" accepted on write) - not independently verified, same caveat as this
+        // module's other unverified property names (see the module doc comment).
         advertise: get_bool_flag(row, "advertise"),
         disabled: get_bool_flag(row, "disabled"),
         id,
@@ -603,10 +601,10 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 /// `mesh-*` are in scope, so any auto-generated link-local RouterOS puts on one of them ends up
 /// "in footprint but not desired" and gets cleaned up like any other stale row. This matters for
 /// two different reasons per interface type:
-/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - confirmed live on a real device, once
-///   a second mesh link existed, every one of them got the *identical* link-local, and RouterOS's
-///   own duplicate address detection then marked every one past the first `invalid`, breaking
-///   OSPFv3 adjacency on all of them. `config::desired_state` now applies the address explicitly
+/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - once a second mesh link
+///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
+///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
+///   all of them. `config::desired_state` now applies the address explicitly
 ///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed) rather
 ///   than relying on auto-generation at all.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
@@ -636,9 +634,8 @@ pub async fn read_ipv6_addresses(
 /// `tunnel_networks`-driven `/128` -> `/64` prefix-length change on the same base address) is a
 /// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
 /// ("failure: already have such address") because the old, still-present entry shares the same
-/// base address, aborting the whole run with *nothing* converged. Confirmed live on a real device: adding
-/// `fe80:c741:faa9::ff/64` while `fe80:c741:faa9::ff/128` (added by an earlier run, same base
-/// address) was still present on another interface failed exactly this way.
+/// base address, aborting the whole run with *nothing* converged: an `fe80::ff/64` add fails
+/// while an earlier run's `fe80::ff/128` is still present on another interface.
 pub async fn apply_ipv6_addresses(
     device: &MikrotikDevice,
     plan: &Plan<DesiredIpv6Address>,
@@ -706,12 +703,11 @@ pub async fn read_ospf_instance(
 }
 
 /// `Update` now also sets `version` (not just `router-id`), attempting an in-place `2 -> 3`
-/// transition for a device migrating from the pre-OSPFv3 scheme. Not independently confirmed
-/// against a real device in this session whether RouterOS actually allows changing an OSPF
-/// instance's `version` after creation - if it rejects this, the pre-existing OSPFv2 instance
-/// needs a one-time manual `/routing ospf instance remove [find name=default-v2]` during the
-/// migration window (mirrors `v2-v3.md`'s own explicit manual "disable OSPFv2" step - this table
-/// is a name-owned singleton by design, not something to build automatic detection for).
+/// transition for a device migrating from the pre-OSPFv3 scheme. Whether RouterOS allows
+/// changing an OSPF instance's `version` after creation is not verified - if it rejects this, the
+/// pre-existing OSPFv2 instance needs a one-time manual
+/// `/routing ospf instance remove [find name=default-v2]` during the migration window. This table
+/// is a name-owned singleton by design, not something to build automatic detection for.
 pub async fn apply_ospf_instance(
     device: &MikrotikDevice,
     op: crate::diff::SingletonOp<DesiredOspfInstance>,
@@ -1032,8 +1028,8 @@ fn parse_bgp_connection(row: &Row) -> anyhow::Result<CurrentBgpConnection> {
             .parse()
             .unwrap_or(Ipv6Addr::UNSPECIFIED),
         // `multihop`/`afi` are top-level connection properties, not nested under
-        // `local.`/`remote.`/`output.` - confirmed against v2-v3.md's worked RouterOS config
-        // (§4), not independently confirmed against a live device in this session.
+        // `local.`/`remote.`/`output.`, not nested - not independently verified against a live
+        // device.
         multihop: get_bool_flag(row, "multihop"),
         afi: get(row, "afi").unwrap_or_default().to_string(),
         output_network: get(row, "output.network").unwrap_or_default().to_string(),

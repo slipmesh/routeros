@@ -358,8 +358,8 @@ impl HasId for CurrentIpv6Address {
 
 /// Same shape/staleness rule as [`ip_addresses`] - `current` must already be pre-filtered by the
 /// caller to this tool's own footprint (see the module doc comment). Only the loopback bridge is
-/// ever in this tool's IPv6-address footprint (mesh-* interfaces get no static IPv6 - RouterOS
-/// generates their link-local on its own, `v2-v3.md` ловушка №2).
+/// ever in this tool's IPv6-address footprint: mesh-* interfaces get no static IPv6, RouterOS
+/// generates their link-local on its own.
 pub fn ipv6_addresses(
     current: &[CurrentIpv6Address],
     desired: &[DesiredIpv6Address],
@@ -539,11 +539,10 @@ pub struct DesiredOspfInstance {
     /// `redistribute=connected` - without it, RouterOS's `passive` flag on an interface-template
     /// suppresses hellos (adjacencies still form on non-passive interfaces) but does **not**
     /// originate an Intra-Area-Prefix-LSA for the passive interface's own connected route, unlike
-    /// BIRD's `stub yes` on the Linux side. Confirmed live on a real device: with only `passive` set,
-    /// `routing ospf lsa print` showed zero `type="prefix"` LSAs self-originated for the loopback
-    /// bridge's own ULA `/128` - no other node could ever compute a route to it, so iBGP (which
-    /// dials that same loopback) could never establish. Setting `redistribute=connected` fixed it
-    /// immediately (`type="intra-area-prefix"` LSA appeared, BGP session established minutes
+    /// BIRD's `stub yes` on the Linux side. With only `passive` set, `routing ospf lsa print`
+    /// shows zero `type="prefix"` LSAs self-originated for the loopback bridge's own ULA `/128`,
+    /// so no other node can compute a route to it and iBGP - which dials that same loopback -
+    /// never establishes. `redistribute=connected` makes the `type="intra-area-prefix"` LSA
     /// later). Safe as a blanket "redistribute every connected route" (not just the loopback):
     /// this OSPF instance is IPv6-only (`version=3`), and the loopback bridge is the only interface
     /// in this tool's scope with an IPv6 address at all - `home`/`uplink` are IPv4-only.
@@ -573,7 +572,7 @@ pub struct DesiredBgpInstance {
 /// `local_address`/`remote_address` are IPv6 loopbacks (OSPFv3/RFC 8950 underlay - peers sit
 /// multiple OSPF hops apart, not on a directly-connected link, hence `multihop`). `afi` is
 /// RouterOS 7.20+'s explicit AFI selector - without it, a session negotiates `afi=ipv6` only and
-/// a BIRD peer expecting an RFC 8950 IPv4-over-IPv6 session drops it (`v2-v3.md` ловушка №4).
+/// a BIRD peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBgpConnection {
     pub name: String,

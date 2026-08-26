@@ -31,8 +31,7 @@ const OSPF_PEER_COST: u16 = 10;
 const OSPF_HELLO_INTERVAL: &str = "10s";
 const OSPF_DEAD_INTERVAL: &str = "40s";
 /// RouterOS 7.20+'s explicit AFI selector for a BGP connection - without it, a session negotiates
-/// `afi=ipv6` only and a peer expecting an RFC 8950 IPv4-over-IPv6 session drops it (`v2-v3.md`
-/// ловушка №4).
+/// `afi=ipv6` only and a peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
 const BGP_AFI_IPV4: &str = "ip";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,10 +120,9 @@ pub fn desired_state(
         // reused verbatim (same per-node link-local convention as the loopback bridge's own
         // address; see `router::config`'s addressing doc comments) - applying it explicitly here
         // rather than relying on RouterOS's own auto-generation, which isn't reliable for a
-        // WireGuard interface (confirmed live on a real device: with only one mesh interface enabled it's
-        // fine, but auto-generation produced the *identical* address on every interface once more
-        // existed, and RouterOS's own duplicate address detection marked every one past the first
-        // `invalid`). Can carry more than one IPv6 entry now (`cluster.tunnel_networks.ipv6`, a
+        // WireGuard interface: with a single mesh interface it is fine, but once a second one
+        // exists auto-generation produces the *identical* address on every interface, and
+        // RouterOS's own duplicate address detection marks every one past the first `invalid`. Can carry more than one IPv6 entry now (`cluster.tunnel_networks.ipv6`, a
         // second, deliberately still link-local-scoped address - see `mesh_config::ClusterConfig::
         // tunnel_networks`'s doc comment) alongside a v4 one (`cluster.tunnel_networks.ipv4`) -
         // that v4 entry is the actual fix `tunnel_networks` exists for: a mesh-* interface
@@ -180,8 +178,7 @@ pub fn desired_state(
         disabled: false,
     }];
     ip_addresses.extend(mesh_ipv4_addresses);
-    // `advertise: false` matches `v2-v3.md` §4's `/ipv6 address add ... advertise=no` - this is a
-    // loopback identity, not a LAN prefix to hand out via SLAAC RA. Mesh interfaces' own link-locals
+    // `advertise: false`: this is a loopback identity, not a LAN prefix to hand out via SLAAC RA. Mesh interfaces' own link-locals
     // (`mesh_link_locals`, built above from `iface.addresses`) join the same table - RouterOS's own
     // auto-generated ones are actively managed away from now on (see `mikrotik.rs::
     // read_ipv6_addresses`), not left to collide.
@@ -197,8 +194,8 @@ pub fn desired_state(
     // export on the Talos side accepts intra-area OSPF routes, so an external-only advertisement
     // is learned and then never installed: every node holds a Full adjacency with this device and
     // none of them can route to its loopback, leaving its iBGP sessions down in both directions.
-    // Confirmed live on a real device - adding this address made RouterOS originate the intra-area prefix LSA
-    // and all five sessions came up within seconds.
+    // With the address present, RouterOS originates the intra-area prefix LSA and the sessions
+    // come up.
     //
     // Same address the mesh interfaces carry (one link-local per node by construction, see the
     // loop above), so it is taken from there rather than recomputed - if that convention ever
@@ -275,7 +272,7 @@ pub fn desired_state(
     }
     bgp_network_addrs.insert(format!("{own_loopback}/32"));
     // RouterOS's `ip firewall address-list` echoes a host-only entry back without its `/32`
-    // suffix (confirmed live: writing "10.62.0.255/32" reads back as "10.62.0.255") - strip it
+    // suffix (a written "10.0.0.255/32" reads back as "10.0.0.255") - strip it
     // here so a /32 entry compares like with like instead of the diff perpetually
     // re-adding/removing the exact same entry.
     let bgp_networks = bgp_network_addrs
@@ -466,8 +463,7 @@ mod tests {
         // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
         // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
         // entry per mesh interface: the identical literal is applied to both, matching what
-        // patches generate already computes for the Linux side (confirmed live on a real device: fine with
-        // every mesh interface genuinely up simultaneously).
+        // patches generate already computes for the Linux side.
         assert_eq!(state.ip_v6_addresses.len(), 4);
         assert!(
             state

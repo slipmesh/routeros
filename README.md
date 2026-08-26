@@ -15,7 +15,7 @@ converges, and exits.
 ## Usage
 
 ```sh
-routeros --node=router1 --patches-dir=./patches [--check] [--diff]
+slipmesh-routeros --node=router1 --patches-dir=./patches [--check] [--diff]
 ```
 
 - `--node` + `--patches-dir` - together resolve to `<patches-dir>/<node>.yaml`; missing or

@@ -1,11 +1,11 @@
-//! CLI surface: `routeros --node=router1 [--patches-dir=patches] [--check] [--diff]`,
+//! CLI surface: `slipmesh-routeros --node=router1 [--patches-dir=patches] [--check] [--diff]`,
 //! modeled on `ansible-playbook --check --diff`.
 
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "routeros",
+    name = "slipmesh-routeros",
     version,
     about = "Converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches"
 )]

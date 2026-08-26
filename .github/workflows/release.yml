@@ -63,12 +63,12 @@ jobs:
       - name: Stage binary under its release name
         run: |
           mkdir -p /tmp/dist
-          cp routeros/target/${{ matrix.rust_target }}/release/routeros /tmp/dist/routeros-linux-${{ matrix.arch }}
+          cp routeros/target/${{ matrix.rust_target }}/release/slipmesh-routeros /tmp/dist/slipmesh-routeros-linux-${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: routeros-linux-${{ matrix.arch }}
-          path: /tmp/dist/routeros-linux-${{ matrix.arch }}
+          name: slipmesh-routeros-linux-${{ matrix.arch }}
+          path: /tmp/dist/slipmesh-routeros-linux-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 1
 
@@ -81,13 +81,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/dist
-          pattern: routeros-linux-*
+          pattern: slipmesh-routeros-linux-*
           merge-multiple: true
 
       - name: Create GitHub Release with both binaries attached
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" /tmp/dist/routeros-linux-amd64 /tmp/dist/routeros-linux-arm64 \
+          gh release create "${{ github.ref_name }}" /tmp/dist/slipmesh-routeros-linux-amd64 /tmp/dist/slipmesh-routeros-linux-arm64 \
             --title "${{ github.ref_name }}" \
             --generate-notes

@@ -1,6 +1,9 @@
 # Fingerprints of confirmed false positives, checked one by one. A secret never
 # belongs here - only a finding that is not one.
+#
+# A fingerprint starts with the commit hash, so rewriting history invalidates every entry
+# in this file. Re-run `gitleaks detect` after a rewrite and replace the hashes.
 
 # A struct field comparison in the WireGuard interface diff: the generic-api-key rule
 # matches the field's own name, there is no value on that line.
-648cf4459126c2f558ef7c5e51074d0858102371:src/diff.rs:generic-api-key:152
+436f7d7fe36537829d482b4e7ba273209ee6279d:src/diff.rs:generic-api-key:152

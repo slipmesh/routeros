@@ -22,6 +22,7 @@ and follows [Semantic Versioning](https://semver.org/).
 
 - Record the one gitleaks false positive
 - Exclude build/ from markdownlint too
+- Repoint the gitleaks fingerprint at the rewritten commit
 
 ## [0.1.0] - 2026-08-18
 

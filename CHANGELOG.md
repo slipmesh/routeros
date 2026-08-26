@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Documentation 📚
+
+- Make the usage documentation work outside its home cluster
+- State the facts instead of pointing at an unpublished file
+- State the facts, drop how they were found
+
+### Fixed 🐛
+
+- Rename binary to slipmesh-routeros
+- Link-local on the loopback bridge, and compare WireGuard keys clamped
+
+### Miscellaneous 🧹
+
+- Record the one gitleaks false positive
+- Exclude build/ from markdownlint too
+
 ## [0.1.0] - 2026-08-18
 
 ### Added ✨
@@ -30,7 +48,7 @@ and follows [Semantic Versioning](https://semver.org/).
 
 - Parse persistent-keepalive's time-unit suffix
 - Show full row content on --diff removals, not a bare id
-- Two real bugs found via live-device diff on hq
+- Two real bugs found via live-device diff on real hardware
 - Presence-style RouterOS flags need contains_key, not get()
 - Apply mesh IPv4/link-local addresses, redistribute connected into OSPF, remove-before-add ordering
 - Stop excluding mesh-* interfaces from the BGP announce candidate set

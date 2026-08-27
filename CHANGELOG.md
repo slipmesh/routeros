@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-08-27
+
+### Fixed 🐛
+
+- Name the binary the way Cargo builds it
+
+### Miscellaneous 🧹
+
+- Move markdownlint config to the cli2 file
+
 ## [0.1.1] - 2026-08-26
 
 ### Documentation 📚

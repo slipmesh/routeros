@@ -381,6 +381,7 @@ mod tests {
     fn peer(public_key: &str, endpoint: Option<&str>) -> PeerEntry {
         PeerEntry {
             public_key: public_key.to_string(),
+            name: None,
             endpoint: endpoint.map(str::to_string),
             allowed_ips: None,
             advanced_security: false,
@@ -412,6 +413,7 @@ mod tests {
         i.peers.push(peer("fra-pub", Some("fra.example.com:51820")));
         let awg = AwgConfig {
             interfaces: vec![i],
+            ..Default::default()
         };
         let mut router = router_config();
         router.ospf_interfaces = vec!["mesh-*".to_string()];
@@ -457,6 +459,7 @@ mod tests {
         i2.addresses = vec!["fe80::a3e:ff/64".to_string()]; // same literal, different interface
         let awg = AwgConfig {
             interfaces: vec![i1, i2],
+            ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
@@ -489,6 +492,7 @@ mod tests {
     fn interface_with_no_addresses_gets_no_extra_ipv6_row() {
         let awg = AwgConfig {
             interfaces: vec![iface("mesh-2", 51820)],
+            ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
         assert_eq!(state.ip_v6_addresses.len(), 1); // loopback bridge only
@@ -503,6 +507,7 @@ mod tests {
         i.addresses = vec!["fe80::a3e:ff/64".to_string(), "10.62.1.255/32".to_string()];
         let awg = AwgConfig {
             interfaces: vec![i],
+            ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
@@ -525,6 +530,7 @@ mod tests {
         i.peers.push(peer("lon-pub", None));
         let awg = AwgConfig {
             interfaces: vec![i],
+            ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
@@ -542,6 +548,7 @@ mod tests {
         i.peers.push(p);
         let awg = AwgConfig {
             interfaces: vec![i],
+            ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
         assert_eq!(state.wireguard_peers[0].allowed_address, "10.99.0.5/32");
@@ -553,6 +560,7 @@ mod tests {
         i.peers.push(peer("fra-pub", Some("no-port-here")));
         let awg = AwgConfig {
             interfaces: vec![i],
+            ..Default::default()
         };
         assert!(desired_state(&awg, &router_config(), &[]).is_err());
     }

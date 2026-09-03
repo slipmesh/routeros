@@ -34,12 +34,14 @@ jobs:
         with:
           path: routeros
 
-      # Pinned to talos-extensions' default branch tip - Cargo.toml's awg/router path deps have
-      # no git rev pin yet, matching what a local dev build already does with a
-      # plain `../talos-extensions` sibling checkout.
+      # Cargo.toml's awg/router are path deps, so whatever lands here is compiled into the
+      # binaries this workflow attaches to the release - pin a tag rather than the branch
+      # tip. No versions.env in this repo to hold it, and no Makefile to enforce it on a
+      # local build, so CI is where it is pinned.
       - uses: actions/checkout@v4
         with:
           repository: slipmesh/talos-extensions
+          ref: v0.1.4
           path: talos-extensions
 
       - uses: dtolnay/rust-toolchain@stable

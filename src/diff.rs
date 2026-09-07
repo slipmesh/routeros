@@ -1303,3 +1303,63 @@ mod ipv6_addresses_tests {
         assert_eq!(plan.remove, vec!["*10".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod bfd_configuration_tests {
+    use super::*;
+
+    fn desired(interfaces: &str) -> DesiredBfdConfiguration {
+        DesiredBfdConfiguration {
+            interfaces: interfaces.to_string(),
+            min_rx: "300ms".to_string(),
+            min_tx: "300ms".to_string(),
+            multiplier: 5,
+        }
+    }
+
+    fn current(id: &str, interfaces: &str, min_rx: &str) -> CurrentBfdConfiguration {
+        CurrentBfdConfiguration {
+            id: id.to_string(),
+            interfaces: interfaces.to_string(),
+            min_rx: Some(min_rx.to_string()),
+            min_tx: Some("300ms".to_string()),
+            multiplier: Some(5),
+        }
+    }
+
+    #[test]
+    fn an_entry_matching_the_device_is_a_noop() {
+        let cur = vec![current("*1", "mesh-fra", "300ms")];
+        assert!(bfd_configurations(&cur, &[desired("mesh-fra")]).is_empty());
+    }
+
+    /// The interval is the whole point of the entry: a device left on different timers detects a
+    /// dead link at a different speed than the other end of it, and nothing else here would say so.
+    #[test]
+    fn a_different_interval_is_an_update_rather_than_a_second_entry() {
+        let cur = vec![current("*1", "mesh-fra", "900ms")];
+        let plan = bfd_configurations(&cur, &[desired("mesh-fra")]);
+        assert_eq!(plan.update.len(), 1);
+        assert!(plan.add.is_empty() && plan.remove.is_empty());
+    }
+
+    /// Keyed by interface, so a renamed link is a different entry - and the old one has to go,
+    /// or the device keeps a rule for a link that no longer exists.
+    #[test]
+    fn a_renamed_interface_removes_the_old_entry_and_adds_the_new_one() {
+        let cur = vec![current("*1", "mesh-gone", "300ms")];
+        let plan = bfd_configurations(&cur, &[desired("mesh-new")]);
+        assert_eq!(plan.remove, vec!["*1".to_string()]);
+        assert_eq!(plan.add.len(), 1);
+    }
+
+    /// Switching BFD off in mesh.yaml empties the desired set, which has to take the device's
+    /// entries with it rather than leaving them behind.
+    #[test]
+    fn no_desired_entries_removes_what_the_device_has() {
+        let cur = vec![current("*1", "mesh-fra", "300ms")];
+        let plan = bfd_configurations(&cur, &[]);
+        assert_eq!(plan.remove, vec!["*1".to_string()]);
+        assert!(plan.add.is_empty() && plan.update.is_empty());
+    }
+}

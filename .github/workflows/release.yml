@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: slipmesh/talos-extensions
-          ref: v0.1.4
+          ref: v0.2.0
           path: talos-extensions
 
       - uses: dtolnay/rust-toolchain@stable

@@ -424,6 +424,9 @@ pub fn list_members(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredOspfInterfaceTemplate {
     pub interfaces: String,
+    /// Asks OSPF to consult BFD for this interface's neighbour. Inert on its own: without a
+    /// matching `/routing/bfd/configuration` entry RouterOS forbids the session outright.
+    pub use_bfd: bool,
     pub area: String,
     pub type_: Option<String>,
     pub cost: Option<u16>,
@@ -437,6 +440,7 @@ pub struct DesiredOspfInterfaceTemplate {
 pub struct CurrentOspfInterfaceTemplate {
     pub id: String,
     pub interfaces: String,
+    pub use_bfd: bool,
     pub area: String,
     pub type_: Option<String>,
     pub cost: Option<u16>,
@@ -479,7 +483,53 @@ pub fn ospf_interface_templates(
                     .as_ref()
                     .is_none_or(|v| c.dead_interval.as_ref() == Some(v))
                 && c.disabled == d.disabled
+                && c.use_bfd == d.use_bfd
                 && passive_flag_is_true(c.passive_raw.as_deref()) == d.passive
+        },
+    )
+}
+
+// ── routing bfd configuration (exclusive) ──
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredBfdConfiguration {
+    pub interfaces: String,
+    /// RouterOS time literals (`300ms`), not milliseconds: `/print` echoes back what was set,
+    /// the same textual comparison the OSPF timers above already rely on.
+    pub min_rx: String,
+    pub min_tx: String,
+    pub multiplier: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentBfdConfiguration {
+    pub id: String,
+    pub interfaces: String,
+    pub min_rx: Option<String>,
+    pub min_tx: Option<String>,
+    pub multiplier: Option<u16>,
+}
+
+impl HasId for CurrentBfdConfiguration {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+pub fn bfd_configurations(
+    current: &[CurrentBfdConfiguration],
+    desired: &[DesiredBfdConfiguration],
+) -> Plan<DesiredBfdConfiguration> {
+    diff(
+        current,
+        desired,
+        |c| c.interfaces.clone(),
+        |d| d.interfaces.clone(),
+        |c| c.id.clone(),
+        |c, d| {
+            c.min_rx.as_deref() == Some(d.min_rx.as_str())
+                && c.min_tx.as_deref() == Some(d.min_tx.as_str())
+                && c.multiplier == Some(d.multiplier)
         },
     )
 }
@@ -978,6 +1028,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive: true,
+            use_bfd: false,
             disabled: false,
         }
     }
@@ -991,6 +1042,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive: false,
+            use_bfd: false,
             disabled: false,
         }
     }
@@ -1006,6 +1058,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive_raw: Some(String::new()),
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1027,6 +1080,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: Some(String::new()),
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1047,6 +1101,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![peer_desired("mesh-fra")];
@@ -1065,6 +1120,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1083,6 +1139,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![peer_desired("mesh-fra")];

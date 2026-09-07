@@ -13,11 +13,12 @@
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
-    CurrentAddressListEntry, CurrentBgpConnection, CurrentIpAddress, CurrentIpv6Address,
-    CurrentListMember, CurrentOspfInterfaceTemplate, CurrentWireguardInterface,
-    CurrentWireguardPeer, DesiredAddressListEntry, DesiredBgpConnection, DesiredBridge,
-    DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea, DesiredOspfInstance,
-    DesiredOspfInterfaceTemplate, DesiredWireguardInterface, DesiredWireguardPeer, Plan,
+    CurrentAddressListEntry, CurrentBfdConfiguration, CurrentBgpConnection, CurrentIpAddress,
+    CurrentIpv6Address, CurrentListMember, CurrentOspfInterfaceTemplate, CurrentWireguardInterface,
+    CurrentWireguardPeer, DesiredAddressListEntry, DesiredBfdConfiguration, DesiredBgpConnection,
+    DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea,
+    DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
+    DesiredWireguardPeer, Plan,
 };
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use std::collections::HashMap;
@@ -813,6 +814,68 @@ pub async fn apply_ospf_area(
     }
 }
 
+// ── routing bfd configuration ──
+
+const BFD_CONFIG_PATH: &str = "/routing/bfd/configuration";
+
+fn parse_bfd_configuration(row: &Row) -> anyhow::Result<CurrentBfdConfiguration> {
+    let id = get_id(row)?;
+    Ok(CurrentBfdConfiguration {
+        interfaces: get_required(row, "interfaces", &id)?.to_string(),
+        min_rx: get(row, "min-rx").map(str::to_string),
+        min_tx: get(row, "min-tx").map(str::to_string),
+        multiplier: get_opt_u16(row, "multiplier")?,
+        id,
+    })
+}
+
+pub async fn read_bfd_configurations(
+    device: &MikrotikDevice,
+) -> anyhow::Result<Vec<CurrentBfdConfiguration>> {
+    let rows = print(device, BFD_CONFIG_PATH).await?;
+    rows.iter().map(parse_bfd_configuration).collect()
+}
+
+/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
+pub async fn apply_bfd_configurations(
+    device: &MikrotikDevice,
+    plan: &Plan<DesiredBfdConfiguration>,
+) -> anyhow::Result<()> {
+    for id in &plan.remove {
+        remove(device, BFD_CONFIG_PATH, id).await?;
+    }
+    for d in &plan.add {
+        let multiplier = d.multiplier.to_string();
+        add(
+            device,
+            BFD_CONFIG_PATH,
+            &[
+                ("interfaces", Some(d.interfaces.as_str())),
+                ("min-rx", Some(d.min_rx.as_str())),
+                ("min-tx", Some(d.min_tx.as_str())),
+                ("multiplier", Some(multiplier.as_str())),
+            ],
+        )
+        .await?;
+    }
+    for (id, d) in &plan.update {
+        let multiplier = d.multiplier.to_string();
+        set(
+            device,
+            BFD_CONFIG_PATH,
+            id,
+            &[
+                ("interfaces", Some(d.interfaces.as_str())),
+                ("min-rx", Some(d.min_rx.as_str())),
+                ("min-tx", Some(d.min_tx.as_str())),
+                ("multiplier", Some(multiplier.as_str())),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 // ── routing ospf interface-template ──
 
 const OSPF_TEMPLATE_PATH: &str = "/routing/ospf/interface-template";
@@ -827,6 +890,7 @@ fn parse_ospf_template(row: &Row) -> anyhow::Result<CurrentOspfInterfaceTemplate
         hello_interval: get(row, "hello-interval").map(str::to_string),
         dead_interval: get(row, "dead-interval").map(str::to_string),
         passive_raw: get_flag_presence(row, "passive"),
+        use_bfd: get_bool_flag(row, "use-bfd"),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -861,6 +925,7 @@ pub async fn apply_ospf_interface_templates(
         if d.passive {
             a.push(("passive", None));
         }
+        a.push(("use-bfd", Some(if d.use_bfd { "yes" } else { "no" })));
         a.push(("disabled", Some(if d.disabled { "yes" } else { "no" })));
         a
     }

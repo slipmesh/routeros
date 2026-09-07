@@ -388,6 +388,7 @@ mod tests {
             announce: vec![],
             bypass: None,
             bfd: None,
+            metrics: None,
         }
     }
 

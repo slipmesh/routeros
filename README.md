@@ -77,3 +77,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+`Cargo.toml`'s `version` and the release tag are the same number, and the release commit moves
+both: it is what an installed `slipmesh-routeros` reports for itself, and bumping only the tag
+leaves a binary that misnames its own version - which is how it read `0.1.0` at tag `v0.1.2`.

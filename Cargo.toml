@@ -1,6 +1,6 @@
 [package]
 name = "routeros"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["slipmesh"]
 # AGPL-3.0-only, unlike every other repository in this organization: this binary depends on
@@ -19,8 +19,8 @@ path = "src/main.rs"
 # that repository's current source - this tool has to agree with the daemons field for field, and
 # depends on their own config types rather than restating them. A pinned git rev would decouple the
 # two; until then, both this repo's release workflow and a local build need the checkout present.
-awg = { path = "../talos-extensions/awg" }
-router = { path = "../talos-extensions/router" }
+awg = { path = "../talos-extensions/awg", default-features = false }
+router = { path = "../talos-extensions/router", default-features = false }
 
 base64 = "0.22"
 mikrotik-rs = { version = "0.8.0", features = ["tokio-tls"] }

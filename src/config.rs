@@ -7,9 +7,10 @@
 
 use crate::cidr;
 use crate::diff::{
-    DesiredAddressListEntry, DesiredBgpConnection, DesiredBgpInstance, DesiredBridge,
-    DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea, DesiredOspfInstance,
-    DesiredOspfInterfaceTemplate, DesiredWireguardInterface, DesiredWireguardPeer,
+    DesiredAddressListEntry, DesiredBfdConfiguration, DesiredBgpConnection, DesiredBgpInstance,
+    DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea,
+    DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
+    DesiredWireguardPeer,
 };
 use crate::sanitize::validate_endpoint;
 use awg::config::AwgConfig;
@@ -45,6 +46,9 @@ pub struct DesiredState {
     pub ospf_instance: DesiredOspfInstance,
     pub ospf_area: DesiredOspfArea,
     pub ospf_interface_templates: Vec<DesiredOspfInterfaceTemplate>,
+    /// Empty unless the mesh asked for BFD. RouterOS forbids any session not covered by an
+    /// entry here, so this is what permits the ones `use-bfd` asks OSPF to consult.
+    pub bfd_configurations: Vec<DesiredBfdConfiguration>,
     pub bgp_networks: Vec<DesiredAddressListEntry>,
     pub bgp_instance: DesiredBgpInstance,
     pub bgp_connections: Vec<DesiredBgpConnection>,
@@ -210,6 +214,7 @@ pub fn desired_state(
     }
     ip_v6_addresses.extend(mesh_link_locals);
 
+    // The loopback is passive - it has no neighbour, so nothing to check the liveness of.
     let mut ospf_interface_templates = vec![DesiredOspfInterfaceTemplate {
         interfaces: LOOPBACK_BRIDGE.to_string(),
         area: OSPF_AREA.to_string(),
@@ -218,6 +223,7 @@ pub fn desired_state(
         hello_interval: None,
         dead_interval: None,
         passive: true,
+        use_bfd: false,
         disabled: false,
     }];
     let mesh_names: Vec<&str> = awg.interfaces.iter().map(|i| i.name.as_str()).collect();
@@ -232,18 +238,35 @@ pub fn desired_state(
             }
         }
     }
-    for name in matched_mesh {
+    for name in &matched_mesh {
         ospf_interface_templates.push(DesiredOspfInterfaceTemplate {
-            interfaces: name.to_string(),
+            interfaces: (*name).to_string(),
             area: OSPF_AREA.to_string(),
             type_: Some("ptp".to_string()),
             cost: Some(OSPF_PEER_COST),
             hello_interval: Some(OSPF_HELLO_INTERVAL.to_string()),
             dead_interval: Some(OSPF_DEAD_INTERVAL.to_string()),
             passive: false,
+            use_bfd: router.bfd.is_some(),
             disabled: false,
         });
     }
+
+    // One entry per mesh interface rather than one listing them all: it mirrors the templates
+    // above, and RouterOS evaluates these in order, so overlapping entries would make which one
+    // applies depend on their arrangement.
+    let bfd_configurations: Vec<DesiredBfdConfiguration> = match &router.bfd {
+        Some(bfd) => matched_mesh
+            .iter()
+            .map(|name| DesiredBfdConfiguration {
+                interfaces: (*name).to_string(),
+                min_rx: format!("{}ms", bfd.min_rx_ms),
+                min_tx: format!("{}ms", bfd.min_tx_ms),
+                multiplier: u16::from(bfd.multiplier),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
 
     // Announce set: physically-connected prefixes on an interface matching `direct_interfaces`,
     // physically-connected prefixes falling inside a `learn` range, and literal `announce` entries
@@ -333,6 +356,7 @@ pub fn desired_state(
             disabled: false,
         },
         ospf_interface_templates,
+        bfd_configurations,
         bgp_networks,
         bgp_instance: DesiredBgpInstance {
             name: BGP_INSTANCE.to_string(),
@@ -363,6 +387,8 @@ mod tests {
             learn: vec![],
             announce: vec![],
             bypass: None,
+            bfd: None,
+            metrics: None,
         }
     }
 
@@ -386,6 +412,43 @@ mod tests {
             allowed_ips: None,
             advanced_security: false,
         }
+    }
+
+    /// Both halves are asserted together because either alone does nothing: RouterOS forbids a
+    /// session with no `/routing/bfd/configuration` entry covering it, and an entry nothing
+    /// consults is never used. The loopback is excluded on purpose - it has no neighbour.
+    #[test]
+    fn bfd_configures_and_requests_only_the_mesh_interfaces_and_only_when_asked() {
+        let awg = AwgConfig {
+            interfaces: vec![iface("mesh-2", 51820)],
+            ..Default::default()
+        };
+        let mut router = router_config();
+        router.ospf_interfaces = vec!["mesh-*".to_string()];
+
+        router.bfd = Some(router::config::BfdSettings {
+            min_rx_ms: 500,
+            ..Default::default()
+        });
+        let on = desired_state(&awg, &router, &[]).unwrap();
+        assert_eq!(on.bfd_configurations.len(), 1);
+        assert_eq!(on.bfd_configurations[0].interfaces, "mesh-2");
+        assert_eq!(on.bfd_configurations[0].min_rx, "500ms");
+        assert_eq!(on.bfd_configurations[0].min_tx, "300ms");
+        assert_eq!(on.bfd_configurations[0].multiplier, 5);
+        for t in &on.ospf_interface_templates {
+            assert_eq!(
+                t.use_bfd,
+                t.interfaces != LOOPBACK_BRIDGE,
+                "{}",
+                t.interfaces
+            );
+        }
+
+        router.bfd = None;
+        let off = desired_state(&awg, &router, &[]).unwrap();
+        assert!(off.bfd_configurations.is_empty());
+        assert!(off.ospf_interface_templates.iter().all(|t| !t.use_bfd));
     }
 
     #[test]

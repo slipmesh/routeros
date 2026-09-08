@@ -51,13 +51,14 @@ Requires:
 ## What it converges
 
 WireGuard interfaces and their peers, a loopback bridge and its IPv4/IPv6 addresses,
-interface-list membership, the OSPFv3 instance/area/interface-templates, the `bgp-networks`
-firewall address-list, and the iBGP connections - thirteen tables in a fixed, dependency-correct
+interface-list membership, the OSPFv3 instance/area/interface-templates, the BFD
+configuration behind them, the `bgp-networks` firewall address-list, and the iBGP connections -
+fourteen tables in a fixed, dependency-correct
 order (`converge.rs`'s module doc comment is the authoritative list). Each is read live from the
 device and diffed against the desired state before anything is written.
 
-Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing ospf
-interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a
+Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing bfd configuration`,
+`routing ospf interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a
 moved listen port can't collide with the row it replaces. Tables shared with whatever else the
 device is doing are only ever touched row by row.
 
@@ -76,3 +77,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+`Cargo.toml`'s `version` and the release tag are the same number, and the release commit moves
+both: it is what an installed `slipmesh-routeros` reports for itself, and bumping only the tag
+leaves a binary that misnames its own version - which is how it read `0.1.0` at tag `v0.1.2`.

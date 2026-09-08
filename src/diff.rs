@@ -424,6 +424,9 @@ pub fn list_members(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredOspfInterfaceTemplate {
     pub interfaces: String,
+    /// Asks OSPF to consult BFD for this interface's neighbour. Inert on its own: without a
+    /// matching `/routing/bfd/configuration` entry RouterOS forbids the session outright.
+    pub use_bfd: bool,
     pub area: String,
     pub type_: Option<String>,
     pub cost: Option<u16>,
@@ -437,6 +440,7 @@ pub struct DesiredOspfInterfaceTemplate {
 pub struct CurrentOspfInterfaceTemplate {
     pub id: String,
     pub interfaces: String,
+    pub use_bfd: bool,
     pub area: String,
     pub type_: Option<String>,
     pub cost: Option<u16>,
@@ -479,7 +483,53 @@ pub fn ospf_interface_templates(
                     .as_ref()
                     .is_none_or(|v| c.dead_interval.as_ref() == Some(v))
                 && c.disabled == d.disabled
+                && c.use_bfd == d.use_bfd
                 && passive_flag_is_true(c.passive_raw.as_deref()) == d.passive
+        },
+    )
+}
+
+// ── routing bfd configuration (exclusive) ──
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredBfdConfiguration {
+    pub interfaces: String,
+    /// RouterOS time literals (`300ms`), not milliseconds: `/print` echoes back what was set,
+    /// the same textual comparison the OSPF timers above already rely on.
+    pub min_rx: String,
+    pub min_tx: String,
+    pub multiplier: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentBfdConfiguration {
+    pub id: String,
+    pub interfaces: String,
+    pub min_rx: Option<String>,
+    pub min_tx: Option<String>,
+    pub multiplier: Option<u16>,
+}
+
+impl HasId for CurrentBfdConfiguration {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+pub fn bfd_configurations(
+    current: &[CurrentBfdConfiguration],
+    desired: &[DesiredBfdConfiguration],
+) -> Plan<DesiredBfdConfiguration> {
+    diff(
+        current,
+        desired,
+        |c| c.interfaces.clone(),
+        |d| d.interfaces.clone(),
+        |c| c.id.clone(),
+        |c, d| {
+            c.min_rx.as_deref() == Some(d.min_rx.as_str())
+                && c.min_tx.as_deref() == Some(d.min_tx.as_str())
+                && c.multiplier == Some(d.multiplier)
         },
     )
 }
@@ -978,6 +1028,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive: true,
+            use_bfd: false,
             disabled: false,
         }
     }
@@ -991,6 +1042,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive: false,
+            use_bfd: false,
             disabled: false,
         }
     }
@@ -1006,6 +1058,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive_raw: Some(String::new()),
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1027,6 +1080,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: Some(String::new()),
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1047,11 +1101,39 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![peer_desired("mesh-fra")];
         let plan = ospf_interface_templates(&cur, &des);
         assert_eq!(plan.update.len(), 1);
+    }
+
+    /// Losing this comparison leaves a device on `use-bfd=no` for good: the BFD entries would
+    /// still be converged, and nothing would ever consult them.
+    #[test]
+    fn turning_bfd_on_updates_the_template_rather_than_replacing_it() {
+        let mut cur = vec![CurrentOspfInterfaceTemplate {
+            id: "*1".to_string(),
+            interfaces: "mesh-fra".to_string(),
+            area: "backbone".to_string(),
+            type_: Some("ptp".to_string()),
+            cost: Some(10),
+            hello_interval: Some("10s".to_string()),
+            dead_interval: Some("40s".to_string()),
+            passive_raw: None,
+            use_bfd: false,
+            disabled: false,
+        }];
+        let mut des = peer_desired("mesh-fra");
+        des.use_bfd = true;
+
+        let plan = ospf_interface_templates(&cur, std::slice::from_ref(&des));
+        assert_eq!(plan.update.len(), 1);
+        assert!(plan.add.is_empty() && plan.remove.is_empty());
+
+        cur[0].use_bfd = true;
+        assert!(ospf_interface_templates(&cur, &[des]).is_empty());
     }
 
     #[test]
@@ -1065,6 +1147,7 @@ mod ospf_interface_templates_tests {
             hello_interval: None,
             dead_interval: None,
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![loopback_desired("router-lo")];
@@ -1083,6 +1166,7 @@ mod ospf_interface_templates_tests {
             hello_interval: Some("10s".to_string()),
             dead_interval: Some("40s".to_string()),
             passive_raw: None,
+            use_bfd: false,
             disabled: false,
         }];
         let des = vec![peer_desired("mesh-fra")];
@@ -1244,5 +1328,65 @@ mod ipv6_addresses_tests {
         let cur = vec![current("*10", "fd00::5/128", "mesh-old")];
         let plan = ipv6_addresses(&cur, &[]);
         assert_eq!(plan.remove, vec!["*10".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod bfd_configuration_tests {
+    use super::*;
+
+    fn desired(interfaces: &str) -> DesiredBfdConfiguration {
+        DesiredBfdConfiguration {
+            interfaces: interfaces.to_string(),
+            min_rx: "300ms".to_string(),
+            min_tx: "300ms".to_string(),
+            multiplier: 5,
+        }
+    }
+
+    fn current(id: &str, interfaces: &str, min_rx: &str) -> CurrentBfdConfiguration {
+        CurrentBfdConfiguration {
+            id: id.to_string(),
+            interfaces: interfaces.to_string(),
+            min_rx: Some(min_rx.to_string()),
+            min_tx: Some("300ms".to_string()),
+            multiplier: Some(5),
+        }
+    }
+
+    #[test]
+    fn an_entry_matching_the_device_is_a_noop() {
+        let cur = vec![current("*1", "mesh-fra", "300ms")];
+        assert!(bfd_configurations(&cur, &[desired("mesh-fra")]).is_empty());
+    }
+
+    /// The interval is the whole point of the entry: a device left on different timers detects a
+    /// dead link at a different speed than the other end of it, and nothing else here would say so.
+    #[test]
+    fn a_different_interval_is_an_update_rather_than_a_second_entry() {
+        let cur = vec![current("*1", "mesh-fra", "900ms")];
+        let plan = bfd_configurations(&cur, &[desired("mesh-fra")]);
+        assert_eq!(plan.update.len(), 1);
+        assert!(plan.add.is_empty() && plan.remove.is_empty());
+    }
+
+    /// Keyed by interface, so a renamed link is a different entry - and the old one has to go,
+    /// or the device keeps a rule for a link that no longer exists.
+    #[test]
+    fn a_renamed_interface_removes_the_old_entry_and_adds_the_new_one() {
+        let cur = vec![current("*1", "mesh-gone", "300ms")];
+        let plan = bfd_configurations(&cur, &[desired("mesh-new")]);
+        assert_eq!(plan.remove, vec!["*1".to_string()]);
+        assert_eq!(plan.add.len(), 1);
+    }
+
+    /// Switching BFD off in mesh.yaml empties the desired set, which has to take the device's
+    /// entries with it rather than leaving them behind.
+    #[test]
+    fn no_desired_entries_removes_what_the_device_has() {
+        let cur = vec![current("*1", "mesh-fra", "300ms")];
+        let plan = bfd_configurations(&cur, &[]);
+        assert_eq!(plan.remove, vec!["*1".to_string()]);
+        assert!(plan.add.is_empty() && plan.update.is_empty());
     }
 }

@@ -14,10 +14,12 @@
 //! 7. `interface list member` add/update (after interfaces exist).
 //! 8. `routing ospf instance` (singleton).
 //! 9. `routing ospf area` (singleton).
-//! 10. `routing ospf interface-template` (exclusive).
-//! 11. `ip firewall address-list` (`bgp-networks`).
-//! 12. `routing bgp instance` (singleton).
-//! 13. `routing bgp connection` (exclusive).
+//! 10. `routing bfd configuration` (exclusive) - before the templates that ask OSPF to consult
+//!     it, since RouterOS forbids any session no entry here covers.
+//! 11. `routing ospf interface-template` (exclusive).
+//! 12. `ip firewall address-list` (`bgp-networks`).
+//! 13. `routing bgp instance` (singleton).
+//! 14. `routing bgp connection` (exclusive).
 
 use crate::config::{self, DesiredState};
 use crate::diff::{Plan, SingletonOp};
@@ -200,7 +202,15 @@ pub async fn run(
     })
     .await?;
 
-    // 10. routing ospf interface-template (exclusive).
+    // 10. routing bfd configuration (exclusive) - before the templates that ask for it.
+    let current_bfd = mikrotik::read_bfd_configurations(device).await?;
+    let bfd_plan = crate::diff::bfd_configurations(&current_bfd, &desired.bfd_configurations);
+    report.record("routing bfd configuration", &current_bfd, &bfd_plan);
+    if apply && !bfd_plan.is_empty() {
+        mikrotik::apply_bfd_configurations(device, &bfd_plan).await?;
+    }
+
+    // 11. routing ospf interface-template (exclusive).
     let current_templates = mikrotik::read_ospf_interface_templates(device).await?;
     let template_plan = crate::diff::ospf_interface_templates(
         &current_templates,
@@ -215,7 +225,7 @@ pub async fn run(
         mikrotik::apply_ospf_interface_templates(device, &template_plan).await?;
     }
 
-    // 11. ip firewall address-list (bgp-networks).
+    // 12. ip firewall address-list (bgp-networks).
     let current_networks = mikrotik::read_bgp_networks(device, config::BGP_NETWORKS_LIST).await?;
     let networks_plan = crate::diff::bgp_networks(&current_networks, &desired.bgp_networks);
     report.record(
@@ -227,7 +237,7 @@ pub async fn run(
         mikrotik::apply_bgp_networks(device, &networks_plan).await?;
     }
 
-    // 12. routing bgp instance (singleton).
+    // 13. routing bgp instance (singleton).
     let current_bgp_instance =
         mikrotik::read_bgp_instance(device, &desired.bgp_instance.name).await?;
     let bgp_instance_op =
@@ -238,7 +248,7 @@ pub async fn run(
     })
     .await?;
 
-    // 13. routing bgp connection (exclusive).
+    // 14. routing bgp connection (exclusive).
     let current_connections = mikrotik::read_bgp_connections(device).await?;
     let connections_plan =
         crate::diff::bgp_connections(&current_connections, &desired.bgp_connections);

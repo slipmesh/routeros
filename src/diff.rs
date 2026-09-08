@@ -1109,6 +1109,33 @@ mod ospf_interface_templates_tests {
         assert_eq!(plan.update.len(), 1);
     }
 
+    /// Losing this comparison leaves a device on `use-bfd=no` for good: the BFD entries would
+    /// still be converged, and nothing would ever consult them.
+    #[test]
+    fn turning_bfd_on_updates_the_template_rather_than_replacing_it() {
+        let mut cur = vec![CurrentOspfInterfaceTemplate {
+            id: "*1".to_string(),
+            interfaces: "mesh-fra".to_string(),
+            area: "backbone".to_string(),
+            type_: Some("ptp".to_string()),
+            cost: Some(10),
+            hello_interval: Some("10s".to_string()),
+            dead_interval: Some("40s".to_string()),
+            passive_raw: None,
+            use_bfd: false,
+            disabled: false,
+        }];
+        let mut des = peer_desired("mesh-fra");
+        des.use_bfd = true;
+
+        let plan = ospf_interface_templates(&cur, std::slice::from_ref(&des));
+        assert_eq!(plan.update.len(), 1);
+        assert!(plan.add.is_empty() && plan.remove.is_empty());
+
+        cur[0].use_bfd = true;
+        assert!(ospf_interface_templates(&cur, &[des]).is_empty());
+    }
+
     #[test]
     fn missing_passive_flag_does_not_match_desired_true() {
         let cur = vec![CurrentOspfInterfaceTemplate {

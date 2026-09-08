@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-08
+
+### Added ✨
+
+- Pin talos-extensions by release tag, not branch tip
+- Converge the MikroTik side of BFD
+
+### Build system 🛠️
+
+- Pin talos-extensions v0.2.0, which carries the fields this reads
+
+### Fixed 🐛
+
+- Keep building against awg's metrics config and peer name
+
+### Miscellaneous 🧹
+
+- Raise the version to 0.2.0
+
+### Tests ✅
+
+- Cover the BFD configuration diff
+- Cover toggling use-bfd on an interface template
+
 ## [0.1.2] - 2026-08-27
 
 ### Fixed 🐛

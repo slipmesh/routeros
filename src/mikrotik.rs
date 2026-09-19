@@ -647,39 +647,29 @@ pub async fn apply_ipv6_addresses(
         remove(device, IPV6_ADDRESS_PATH, id).await?;
     }
     for d in &plan.add {
-        add(
-            device,
-            IPV6_ADDRESS_PATH,
-            &[
-                ("address", Some(d.address.as_str())),
-                ("interface", Some(d.interface.as_str())),
-                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
-                (
-                    "auto-link-local",
-                    Some(if d.auto_link_local { "yes" } else { "no" }),
-                ),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-            ],
-        )
-        .await?;
+        let mut attrs = vec![
+            ("address", Some(d.address.as_str())),
+            ("interface", Some(d.interface.as_str())),
+        ];
+        attrs.extend(ipv6_address_settings(d));
+        add(device, IPV6_ADDRESS_PATH, &attrs).await?;
     }
     for (id, d) in &plan.update {
-        set(
-            device,
-            IPV6_ADDRESS_PATH,
-            id,
-            &[
-                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
-                (
-                    "auto-link-local",
-                    Some(if d.auto_link_local { "yes" } else { "no" }),
-                ),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-            ],
-        )
-        .await?;
+        set(device, IPV6_ADDRESS_PATH, id, &ipv6_address_settings(d)).await?;
     }
     Ok(())
+}
+
+/// `auto-link-local` is sent only when set: RouterOS rejects it on an address that is not
+/// link-local, whatever the value.
+fn ipv6_address_settings(d: &DesiredIpv6Address) -> Vec<(&'static str, Option<&'static str>)> {
+    let yes_no = |on: bool| Some(if on { "yes" } else { "no" });
+    let mut attrs = vec![("advertise", yes_no(d.advertise))];
+    if let Some(auto_link_local) = d.auto_link_local {
+        attrs.push(("auto-link-local", yes_no(auto_link_local)));
+    }
+    attrs.push(("disabled", yes_no(d.disabled)));
+    attrs
 }
 
 // ── routing ospf instance (singleton) ──

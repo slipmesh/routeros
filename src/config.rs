@@ -61,15 +61,19 @@ pub struct DesiredState {
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
 /// the interface; left at the default `yes`, the generated one comes back next to it on every boot
 /// and OSPFv3 may bind to that instead, advertising a next hop the other end of the link does not
-/// consider on-link.
-fn own_ipv6_address(address: &str, interface: &str) -> DesiredIpv6Address {
-    DesiredIpv6Address {
+/// consider on-link. RouterOS refuses the flag on any other address, so there it stays unset.
+fn own_ipv6_address(address: &str, interface: &str) -> anyhow::Result<DesiredIpv6Address> {
+    let host = address.split_once('/').map_or(address, |(host, _)| host);
+    let host: Ipv6Addr = host
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid IPv6 address {address:?} on {interface}: {e}"))?;
+    Ok(DesiredIpv6Address {
         address: address.to_string(),
         interface: interface.to_string(),
         advertise: false,
-        auto_link_local: false,
+        auto_link_local: host.is_unicast_link_local().then_some(false),
         disabled: false,
-    }
+    })
 }
 
 fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> {
@@ -150,7 +154,7 @@ pub fn desired_state(
         // a source when `service_subnet` traffic egresses via one.
         for addr in &iface.addresses {
             if addr.contains(':') {
-                mesh_link_locals.push(own_ipv6_address(addr, &iface.name));
+                mesh_link_locals.push(own_ipv6_address(addr, &iface.name)?);
             } else {
                 mesh_ipv4_addresses.push(DesiredIpAddress {
                     address: addr.clone(),
@@ -198,7 +202,7 @@ pub fn desired_state(
     let mut ip_v6_addresses = vec![own_ipv6_address(
         &format!("{own_ipv6_loopback}/128"),
         LOOPBACK_BRIDGE,
-    )];
+    )?];
     // OSPFv3 runs entirely over link-local addresses, and RouterOS will not originate an
     // Intra-Area-Prefix-LSA for an interface that has none - it falls back to advertising the
     // loopback only through `redistribute=connected`, i.e. as an AS-external LSA. BIRD's kernel
@@ -212,7 +216,7 @@ pub fn desired_state(
     // loop above), so it is taken from there rather than recomputed - if that convention ever
     // changes, both follow it together.
     if let Some(link_local) = mesh_link_locals.first().map(|a| a.address.clone()) {
-        ip_v6_addresses.push(own_ipv6_address(&link_local, LOOPBACK_BRIDGE));
+        ip_v6_addresses.push(own_ipv6_address(&link_local, LOOPBACK_BRIDGE)?);
     }
     ip_v6_addresses.extend(mesh_link_locals);
 
@@ -554,9 +558,11 @@ mod tests {
     }
 
     /// With `auto-link-local=yes` RouterOS keeps generating its own link-local next to ours after
-    /// every boot, and OSPFv3 on the mesh can bind to that one instead.
+    /// every boot, and OSPFv3 on the mesh can bind to that one instead. RouterOS refuses the flag
+    /// on any other address ("selected address is not link local"), so the loopback ULA leaves it
+    /// unset.
     #[test]
-    fn every_ipv6_address_replaces_the_generated_link_local() {
+    fn link_locals_replace_the_generated_one_and_the_ula_leaves_the_flag_unset() {
         let mut i = iface("mesh-2", 51820);
         i.addresses = vec!["fe80::a3e:ff/64".to_string()];
         let awg = AwgConfig {
@@ -566,7 +572,14 @@ mod tests {
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
         assert_eq!(state.ip_v6_addresses.len(), 3);
-        assert!(state.ip_v6_addresses.iter().all(|a| !a.auto_link_local));
+        for a in &state.ip_v6_addresses {
+            let expected = a.address.starts_with("fe80:").then_some(false);
+            assert_eq!(
+                a.auto_link_local, expected,
+                "{} on {}",
+                a.address, a.interface
+            );
+        }
     }
 
     #[test]

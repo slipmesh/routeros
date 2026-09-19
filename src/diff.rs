@@ -338,7 +338,7 @@ pub struct DesiredIpv6Address {
     pub address: String,
     pub interface: String,
     pub advertise: bool,
-    pub auto_link_local: bool,
+    pub auto_link_local: Option<bool>,
     pub disabled: bool,
 }
 
@@ -373,7 +373,7 @@ pub fn ipv6_addresses(
         |c| c.id.clone(),
         |c, d| {
             c.advertise == d.advertise
-                && c.auto_link_local == d.auto_link_local
+                && d.auto_link_local.is_none_or(|v| v == c.auto_link_local)
                 && c.disabled == d.disabled
         },
     )
@@ -1292,7 +1292,7 @@ mod ipv6_addresses_tests {
             address: address.to_string(),
             interface: interface.to_string(),
             advertise: false,
-            auto_link_local: false,
+            auto_link_local: Some(false),
             disabled: false,
         }
     }
@@ -1339,6 +1339,17 @@ mod ipv6_addresses_tests {
         let des = desired("fe80::ff/64", "mesh-2");
         let plan = ipv6_addresses(&[cur], std::slice::from_ref(&des));
         assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+    }
+
+    /// RouterOS reports the flag on every address but accepts it only on a link-local, so an
+    /// unset desired flag must never turn into an update.
+    #[test]
+    fn noop_when_auto_link_local_is_unset() {
+        let mut cur = current("*1", "fd00::1/128", "router-lo");
+        cur.auto_link_local = true;
+        let mut des = desired("fd00::1/128", "router-lo");
+        des.auto_link_local = None;
+        assert!(ipv6_addresses(&[cur], &[des]).is_empty());
     }
 
     #[test]

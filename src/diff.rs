@@ -1287,23 +1287,33 @@ mod bgp_connections_tests {
 mod ipv6_addresses_tests {
     use super::*;
 
+    fn is_link_local(address: &str) -> bool {
+        let host = address.split_once('/').map_or(address, |(host, _)| host);
+        host.parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .is_unicast_link_local()
+    }
+
+    /// Shaped like `config::desired_state` builds it: the flag is set only on a link-local.
     fn desired(address: &str, interface: &str) -> DesiredIpv6Address {
         DesiredIpv6Address {
             address: address.to_string(),
             interface: interface.to_string(),
             advertise: false,
-            auto_link_local: Some(false),
+            auto_link_local: is_link_local(address).then_some(false),
             disabled: false,
         }
     }
 
+    /// Shaped like a converged device reports it: `no` on our link-locals, and RouterOS's default
+    /// `yes` on any other address, where the flag cannot be changed.
     fn current(id: &str, address: &str, interface: &str) -> CurrentIpv6Address {
         CurrentIpv6Address {
             id: id.to_string(),
             address: address.to_string(),
             interface: interface.to_string(),
             advertise: false,
-            auto_link_local: false,
+            auto_link_local: !is_link_local(address),
             disabled: false,
         }
     }
@@ -1345,10 +1355,9 @@ mod ipv6_addresses_tests {
     /// unset desired flag must never turn into an update.
     #[test]
     fn noop_when_auto_link_local_is_unset() {
-        let mut cur = current("*1", "fd00::1/128", "router-lo");
-        cur.auto_link_local = true;
-        let mut des = desired("fd00::1/128", "router-lo");
-        des.auto_link_local = None;
+        let cur = current("*1", "fd00::1/128", "router-lo");
+        let des = desired("fd00::1/128", "router-lo");
+        assert!(cur.auto_link_local && des.auto_link_local.is_none());
         assert!(ipv6_addresses(&[cur], &[des]).is_empty());
     }
 

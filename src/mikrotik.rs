@@ -1267,6 +1267,30 @@ mod tests {
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
     }
 
+    fn ipv6_address(address: &str, auto_link_local: Option<bool>) -> DesiredIpv6Address {
+        DesiredIpv6Address {
+            address: address.to_string(),
+            interface: "router-lo".to_string(),
+            advertise: false,
+            auto_link_local,
+            disabled: false,
+        }
+    }
+
+    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the
+    /// value, and the whole run aborts on it - an unset flag must not reach the device at all.
+    #[test]
+    fn ipv6_address_settings_leave_out_an_unset_auto_link_local() {
+        let settings = ipv6_address_settings(&ipv6_address("fd00::1/128", None));
+        assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
+    }
+
+    #[test]
+    fn ipv6_address_settings_send_auto_link_local_when_set() {
+        let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
+        assert!(settings.contains(&("auto-link-local", Some("no"))));
+    }
+
     #[test]
     fn parses_ipv6_address_row() {
         let r = row(&[

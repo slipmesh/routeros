@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-09-19
+
+### Fixed 🐛
+
+- Make the managed link-locals replace the ones RouterOS generates (#7)
+
 ## [0.2.0] - 2026-09-08
 
 ### Added ✨

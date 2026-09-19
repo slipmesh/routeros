@@ -338,6 +338,7 @@ pub struct DesiredIpv6Address {
     pub address: String,
     pub interface: String,
     pub advertise: bool,
+    pub auto_link_local: Option<bool>,
     pub disabled: bool,
 }
 
@@ -347,6 +348,7 @@ pub struct CurrentIpv6Address {
     pub address: String,
     pub interface: String,
     pub advertise: bool,
+    pub auto_link_local: bool,
     pub disabled: bool,
 }
 
@@ -357,9 +359,8 @@ impl HasId for CurrentIpv6Address {
 }
 
 /// Same shape/staleness rule as [`ip_addresses`] - `current` must already be pre-filtered by the
-/// caller to this tool's own footprint (see the module doc comment). Only the loopback bridge is
-/// ever in this tool's IPv6-address footprint: mesh-* interfaces get no static IPv6, RouterOS
-/// generates their link-local on its own.
+/// caller to this tool's own footprint (see the module doc comment): the loopback bridge and the
+/// mesh-* interfaces.
 pub fn ipv6_addresses(
     current: &[CurrentIpv6Address],
     desired: &[DesiredIpv6Address],
@@ -370,7 +371,11 @@ pub fn ipv6_addresses(
         |c| (c.interface.clone(), c.address.clone()),
         |d| (d.interface.clone(), d.address.clone()),
         |c| c.id.clone(),
-        |c, d| c.advertise == d.advertise && c.disabled == d.disabled,
+        |c, d| {
+            c.advertise == d.advertise
+                && d.auto_link_local.is_none_or(|v| v == c.auto_link_local)
+                && c.disabled == d.disabled
+        },
     )
 }
 
@@ -1282,21 +1287,33 @@ mod bgp_connections_tests {
 mod ipv6_addresses_tests {
     use super::*;
 
+    fn is_link_local(address: &str) -> bool {
+        let host = address.split_once('/').map_or(address, |(host, _)| host);
+        host.parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .is_unicast_link_local()
+    }
+
+    /// Shaped like `config::desired_state` builds it: the flag is set only on a link-local.
     fn desired(address: &str, interface: &str) -> DesiredIpv6Address {
         DesiredIpv6Address {
             address: address.to_string(),
             interface: interface.to_string(),
             advertise: false,
+            auto_link_local: is_link_local(address).then_some(false),
             disabled: false,
         }
     }
 
+    /// Shaped like a converged device reports it: `no` on our link-locals, and RouterOS's default
+    /// `yes` on any other address, where the flag cannot be changed.
     fn current(id: &str, address: &str, interface: &str) -> CurrentIpv6Address {
         CurrentIpv6Address {
             id: id.to_string(),
             address: address.to_string(),
             interface: interface.to_string(),
             advertise: false,
+            auto_link_local: !is_link_local(address),
             disabled: false,
         }
     }
@@ -1321,6 +1338,27 @@ mod ipv6_addresses_tests {
         des.advertise = true;
         let plan = ipv6_addresses(&cur, &[des.clone()]);
         assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+    }
+
+    /// A manual link-local left on `auto-link-local=yes` sits next to the one RouterOS generates
+    /// after every boot, and OSPFv3 may bind to the generated one - only the flag says so.
+    #[test]
+    fn update_when_auto_link_local_differs() {
+        let mut cur = current("*1", "fe80::ff/64", "mesh-2");
+        cur.auto_link_local = true;
+        let des = desired("fe80::ff/64", "mesh-2");
+        let plan = ipv6_addresses(&[cur], std::slice::from_ref(&des));
+        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+    }
+
+    /// RouterOS reports the flag on every address but accepts it only on a link-local, so an
+    /// unset desired flag must never turn into an update.
+    #[test]
+    fn noop_when_auto_link_local_is_unset() {
+        let cur = current("*1", "fd00::1/128", "router-lo");
+        let des = desired("fd00::1/128", "router-lo");
+        assert!(cur.auto_link_local && des.auto_link_local.is_none());
+        assert!(ipv6_addresses(&[cur], &[des]).is_empty());
     }
 
     #[test]

@@ -589,6 +589,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
         // "yes"/"no" accepted on write) - not independently verified, same caveat as this
         // module's other unverified property names (see the module doc comment).
         advertise: get_bool_flag(row, "advertise"),
+        auto_link_local: get_bool_flag(row, "auto-link-local"),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -606,8 +607,9 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
 ///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
 ///   all of them. `config::desired_state` now applies the address explicitly
-///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed) rather
-///   than relying on auto-generation at all.
+///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed), with
+///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
+///   see `config::own_ipv6_address`.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
 ///   MAC), but once `routing ospf instance`'s `redistribute=connected` is set (see
 ///   `apply_ospf_instance`), RouterOS redistributes *every* connected IPv6 route on that interface
@@ -645,31 +647,29 @@ pub async fn apply_ipv6_addresses(
         remove(device, IPV6_ADDRESS_PATH, id).await?;
     }
     for d in &plan.add {
-        add(
-            device,
-            IPV6_ADDRESS_PATH,
-            &[
-                ("address", Some(d.address.as_str())),
-                ("interface", Some(d.interface.as_str())),
-                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-            ],
-        )
-        .await?;
+        let mut attrs = vec![
+            ("address", Some(d.address.as_str())),
+            ("interface", Some(d.interface.as_str())),
+        ];
+        attrs.extend(ipv6_address_settings(d));
+        add(device, IPV6_ADDRESS_PATH, &attrs).await?;
     }
     for (id, d) in &plan.update {
-        set(
-            device,
-            IPV6_ADDRESS_PATH,
-            id,
-            &[
-                ("advertise", Some(if d.advertise { "yes" } else { "no" })),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-            ],
-        )
-        .await?;
+        set(device, IPV6_ADDRESS_PATH, id, &ipv6_address_settings(d)).await?;
     }
     Ok(())
+}
+
+/// `auto-link-local` is sent only when set: RouterOS rejects it on an address that is not
+/// link-local, whatever the value.
+fn ipv6_address_settings(d: &DesiredIpv6Address) -> Vec<(&'static str, Option<&'static str>)> {
+    let yes_no = |on: bool| Some(if on { "yes" } else { "no" });
+    let mut attrs = vec![("advertise", yes_no(d.advertise))];
+    if let Some(auto_link_local) = d.auto_link_local {
+        attrs.push(("auto-link-local", yes_no(auto_link_local)));
+    }
+    attrs.push(("disabled", yes_no(d.disabled)));
+    attrs
 }
 
 // ── routing ospf instance (singleton) ──
@@ -1265,6 +1265,30 @@ mod tests {
         r.insert("passive".to_string(), None);
         let t = parse_ospf_template(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
+    }
+
+    fn ipv6_address(address: &str, auto_link_local: Option<bool>) -> DesiredIpv6Address {
+        DesiredIpv6Address {
+            address: address.to_string(),
+            interface: "router-lo".to_string(),
+            advertise: false,
+            auto_link_local,
+            disabled: false,
+        }
+    }
+
+    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the
+    /// value, and the whole run aborts on it - an unset flag must not reach the device at all.
+    #[test]
+    fn ipv6_address_settings_leave_out_an_unset_auto_link_local() {
+        let settings = ipv6_address_settings(&ipv6_address("fd00::1/128", None));
+        assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
+    }
+
+    #[test]
+    fn ipv6_address_settings_send_auto_link_local_when_set() {
+        let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
+        assert!(settings.contains(&("auto-link-local", Some("no"))));
     }
 
     #[test]

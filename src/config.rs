@@ -56,6 +56,22 @@ pub struct DesiredState {
 
 /// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (enforced by
 /// `router::config::validate`, already run in `patch::read_patch_file`) - pulls both out by family.
+/// Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
+///
+/// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
+/// the interface; left at the default `yes`, the generated one comes back next to it on every boot
+/// and OSPFv3 may bind to that instead, advertising a next hop the other end of the link does not
+/// consider on-link.
+fn own_ipv6_address(address: &str, interface: &str) -> DesiredIpv6Address {
+    DesiredIpv6Address {
+        address: address.to_string(),
+        interface: interface.to_string(),
+        advertise: false,
+        auto_link_local: false,
+        disabled: false,
+    }
+}
+
 fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> {
     let mut v4 = None;
     let mut v6 = None;
@@ -134,12 +150,7 @@ pub fn desired_state(
         // a source when `service_subnet` traffic egresses via one.
         for addr in &iface.addresses {
             if addr.contains(':') {
-                mesh_link_locals.push(DesiredIpv6Address {
-                    address: addr.clone(),
-                    interface: iface.name.clone(),
-                    advertise: false,
-                    disabled: false,
-                });
+                mesh_link_locals.push(own_ipv6_address(addr, &iface.name));
             } else {
                 mesh_ipv4_addresses.push(DesiredIpAddress {
                     address: addr.clone(),
@@ -182,16 +193,12 @@ pub fn desired_state(
         disabled: false,
     }];
     ip_addresses.extend(mesh_ipv4_addresses);
-    // `advertise: false`: this is a loopback identity, not a LAN prefix to hand out via SLAAC RA. Mesh interfaces' own link-locals
-    // (`mesh_link_locals`, built above from `iface.addresses`) join the same table - RouterOS's own
-    // auto-generated ones are actively managed away from now on (see `mikrotik.rs::
-    // read_ipv6_addresses`), not left to collide.
-    let mut ip_v6_addresses = vec![DesiredIpv6Address {
-        address: format!("{own_ipv6_loopback}/128"),
-        interface: LOOPBACK_BRIDGE.to_string(),
-        advertise: false,
-        disabled: false,
-    }];
+    // Mesh interfaces' own link-locals (`mesh_link_locals`, built above from `iface.addresses`)
+    // join the loopback's addresses in the same table.
+    let mut ip_v6_addresses = vec![own_ipv6_address(
+        &format!("{own_ipv6_loopback}/128"),
+        LOOPBACK_BRIDGE,
+    )];
     // OSPFv3 runs entirely over link-local addresses, and RouterOS will not originate an
     // Intra-Area-Prefix-LSA for an interface that has none - it falls back to advertising the
     // loopback only through `redistribute=connected`, i.e. as an AS-external LSA. BIRD's kernel
@@ -205,12 +212,7 @@ pub fn desired_state(
     // loop above), so it is taken from there rather than recomputed - if that convention ever
     // changes, both follow it together.
     if let Some(link_local) = mesh_link_locals.first().map(|a| a.address.clone()) {
-        ip_v6_addresses.push(DesiredIpv6Address {
-            address: link_local,
-            interface: LOOPBACK_BRIDGE.to_string(),
-            advertise: false,
-            disabled: false,
-        });
+        ip_v6_addresses.push(own_ipv6_address(&link_local, LOOPBACK_BRIDGE));
     }
     ip_v6_addresses.extend(mesh_link_locals);
 
@@ -549,6 +551,22 @@ mod tests {
                 .iter()
                 .any(|a| a.interface == "mesh-3" && a.address == "fe80::a3e:ff/64" && !a.advertise)
         );
+    }
+
+    /// With `auto-link-local=yes` RouterOS keeps generating its own link-local next to ours after
+    /// every boot, and OSPFv3 on the mesh can bind to that one instead.
+    #[test]
+    fn every_ipv6_address_replaces_the_generated_link_local() {
+        let mut i = iface("mesh-2", 51820);
+        i.addresses = vec!["fe80::a3e:ff/64".to_string()];
+        let awg = AwgConfig {
+            interfaces: vec![i],
+            ..Default::default()
+        };
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
+
+        assert_eq!(state.ip_v6_addresses.len(), 3);
+        assert!(state.ip_v6_addresses.iter().all(|a| !a.auto_link_local));
     }
 
     #[test]

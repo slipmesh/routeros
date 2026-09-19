@@ -589,6 +589,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
         // "yes"/"no" accepted on write) - not independently verified, same caveat as this
         // module's other unverified property names (see the module doc comment).
         advertise: get_bool_flag(row, "advertise"),
+        auto_link_local: get_bool_flag(row, "auto-link-local"),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -606,8 +607,9 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
 ///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
 ///   all of them. `config::desired_state` now applies the address explicitly
-///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed) rather
-///   than relying on auto-generation at all.
+///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed), with
+///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
+///   see `config::own_ipv6_address`.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
 ///   MAC), but once `routing ospf instance`'s `redistribute=connected` is set (see
 ///   `apply_ospf_instance`), RouterOS redistributes *every* connected IPv6 route on that interface
@@ -652,6 +654,10 @@ pub async fn apply_ipv6_addresses(
                 ("address", Some(d.address.as_str())),
                 ("interface", Some(d.interface.as_str())),
                 ("advertise", Some(if d.advertise { "yes" } else { "no" })),
+                (
+                    "auto-link-local",
+                    Some(if d.auto_link_local { "yes" } else { "no" }),
+                ),
                 ("disabled", Some(if d.disabled { "yes" } else { "no" })),
             ],
         )
@@ -664,6 +670,10 @@ pub async fn apply_ipv6_addresses(
             id,
             &[
                 ("advertise", Some(if d.advertise { "yes" } else { "no" })),
+                (
+                    "auto-link-local",
+                    Some(if d.auto_link_local { "yes" } else { "no" }),
+                ),
                 ("disabled", Some(if d.disabled { "yes" } else { "no" })),
             ],
         )

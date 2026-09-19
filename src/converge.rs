@@ -8,8 +8,8 @@
 //! 2. `interface wireguard` (exclusive).
 //! 3. `interface bridge` (loopback, singleton) - before its own address can be set.
 //! 4. `ip address` (loopback `/32` - mesh links carry no IPv4 any more, OSPFv3/RFC 8950 underlay).
-//! 5. `ipv6 address` (loopback ULA `/128` - independent of step 4, order between the two doesn't
-//!    matter).
+//! 5. `ipv6 address` (loopback ULA `/128` and the link-locals - independent of step 4, order
+//!    between the two doesn't matter).
 //! 6. `interface wireguard peers` (exclusive).
 //! 7. `interface list member` add/update (after interfaces exist).
 //! 8. `routing ospf instance` (singleton).
@@ -160,8 +160,7 @@ pub async fn run(
         mikrotik::apply_ip_addresses(device, &addr_plan).await?;
     }
 
-    // 5. ipv6 address (loopback ULA /128 - mesh-* interfaces get no static IPv6, RouterOS
-    // generates their link-local on its own).
+    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and mesh-* interfaces).
     let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
     let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
     report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);

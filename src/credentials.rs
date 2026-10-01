@@ -27,7 +27,7 @@ struct RawCredentials {
 }
 
 pub fn parse_from_yaml(content: &str) -> anyhow::Result<RouterCredentials> {
-    let raw: RawCredentials = serde_yaml::from_str(content)
+    let raw: RawCredentials = yaml_serde::from_str(content)
         .map_err(|e| anyhow::anyhow!("mikrotik credentials document is not valid YAML: {e}"))?;
 
     let host = raw

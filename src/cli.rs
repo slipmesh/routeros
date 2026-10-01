@@ -5,18 +5,19 @@ use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "slipmesh-routeros",
+    name = env!("CARGO_BIN_NAME"),
+    bin_name = env!("CARGO_BIN_NAME"),
     version,
-    about = "Converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches"
+    about = "Converges a MikroTik RouterOS device to the desired state computed by slipmesh-taloscfg"
 )]
 pub struct Cli {
-    /// Node name - reads `<patches-dir>/<node>.yaml`, the patch file `talos-extensions/patches
-    /// generate` produces for this node from `mesh.yaml`.
+    /// Node name - reads `<patches-dir>/<node>.yaml`, the patch file `slipmesh-taloscfg generate`
+    /// produces for this node from `slipmesh.yaml`.
     #[arg(long)]
     pub node: String,
 
-    /// Directory containing `talos-extensions/patches generate`'s output - same default/
-    /// convention as that tool's own `--patches-dir`.
+    /// Directory containing `slipmesh-taloscfg generate`'s output - same default as that tool's
+    /// own `--patches-dir`.
     #[arg(long, default_value = "patches")]
     pub patches_dir: String,
 

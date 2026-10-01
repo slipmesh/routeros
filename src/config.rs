@@ -1,6 +1,6 @@
 //! Pure "compute what this RouterOS device should look like" logic - translates the
-//! `talos-extensions` `AwgConfig`/`RouterConfig` (already fully resolved by `patches generate` from
-//! `mesh.yaml`) into RouterOS's own tables. The RouterOS analogue of what `awg`'s own netlink
+//! `talos-extensions` `AwgConfig`/`RouterConfig` (already fully resolved by `slipmesh-taloscfg generate` from
+//! `slipmesh.yaml`) into RouterOS's own tables. The RouterOS analogue of what `awg`'s own netlink
 //! converger and `router::bird::render` do for a Linux node, just targeting the RouterOS API
 //! instead of the kernel/a BIRD config file. Touches neither `patch::read_patch_file` nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
@@ -93,7 +93,7 @@ fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> 
     ))
 }
 
-/// Only the suffix-`*` grammar `mesh.yaml`/`render.rs` actually produce (`"mesh-*"`) - sufficient
+/// Only the suffix-`*` grammar `slipmesh.yaml`/`render.rs` actually produce (`"mesh-*"`) - sufficient
 /// for `ospf_interfaces`/`direct_interfaces`, both fed straight into BIRD's own glob-capable
 /// `interface` clause on Linux nodes. RouterOS has no equivalent daemon-level pattern engine to
 /// lean on, so this tool matches locally instead.
@@ -140,7 +140,7 @@ pub fn desired_state(
             interface: iface.name.clone(),
             disabled: false,
         });
-        // `iface.addresses` is whatever `patches generate` already computed for the Linux side,
+        // `iface.addresses` is whatever `slipmesh-taloscfg generate` already computed for the Linux side,
         // reused verbatim (same per-node link-local convention as the loopback bridge's own
         // address; see `router::config`'s addressing doc comments) - applying it explicitly here
         // rather than relying on RouterOS's own auto-generation, which isn't reliable for a
@@ -535,7 +535,7 @@ mod tests {
         // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
         // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
         // entry per mesh interface: the identical literal is applied to both, matching what
-        // patches generate already computes for the Linux side.
+        // slipmesh-taloscfg generate already computes for the Linux side.
         assert_eq!(state.ip_v6_addresses.len(), 4);
         assert!(
             state

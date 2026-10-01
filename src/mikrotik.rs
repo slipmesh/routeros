@@ -607,7 +607,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
 ///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
 ///   all of them. `config::desired_state` now applies the address explicitly
-///   (from `awg.interfaces[].addresses`, the same value `patches generate` already computed), with
+///   (from `awg.interfaces[].addresses`, the same value `slipmesh-taloscfg generate` already computed), with
 ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
 ///   see `config::own_ipv6_address`.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real

@@ -1,17 +1,15 @@
-//! Reads a `talos-extensions/patches`-generated patch file (`<patches-dir>/<node>.yaml`) and
-//! extracts the `awg`/`router`/`mikrotik` `ExtensionServiceConfig` documents this tool needs.
-//! Independent, minimal reimplementation of the document-splitting logic in
-//! `talos-extensions/patches/src/segments.rs` (that crate has no `lib.rs` to depend on) - same
-//! trivial format: `---`-separated YAML documents, each identified by `kind`/`name`. `mikrotik` is
-//! a foreign document as far as `patches generate` is concerned (outside its own
-//! `OWNED_NAMES = ["awg", "router", "nftables"]`), so it's preserved byte-for-byte across
-//! regeneration - see `credentials.rs`.
+//! Reads the patch file `slipmesh-taloscfg generate` writes for a node (`<patches-dir>/<node>.yaml`)
+//! and extracts the `awg`/`router`/`mikrotik` `ExtensionServiceConfig` documents this tool needs.
+//! `mikrotik` comes from a `kind: patch` document of `slipmesh.yaml`, which the generator passes
+//! through to this node's patch file - see `credentials.rs`.
 
 use crate::credentials::{self, RouterCredentials};
+use anyhow::Context;
 use awg::config::AwgConfig;
 use router::config::RouterConfig;
 use serde::Deserialize;
 use std::path::Path;
+use yaml_serde::Value;
 
 pub struct PatchFile {
     pub awg: AwgConfig,
@@ -19,10 +17,8 @@ pub struct PatchFile {
     pub credentials: RouterCredentials,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct Envelope {
-    kind: Option<String>,
-    name: Option<String>,
     #[serde(rename = "configFiles", default)]
     config_files: Vec<ConfigFile>,
 }
@@ -32,49 +28,47 @@ struct ConfigFile {
     content: String,
 }
 
-fn split_segments(raw: &str) -> Vec<&str> {
-    let raw = raw.strip_prefix("---\n").unwrap_or(raw);
-    raw.split("\n---\n")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect()
+fn documents(raw: &str) -> anyhow::Result<Vec<Value>> {
+    yaml_serde::Deserializer::from_str(raw)
+        .map(Value::deserialize)
+        .collect::<Result<_, _>>()
+        .context("patch file is not valid YAML")
 }
 
-fn segment_content(segments: &[&str], name: &str) -> anyhow::Result<String> {
-    for segment in segments {
-        let envelope: Envelope = serde_yaml::from_str(segment).unwrap_or_default();
-        if envelope.kind.as_deref() == Some("ExtensionServiceConfig")
-            && envelope.name.as_deref() == Some(name)
-        {
-            let content = envelope
-                .config_files
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("{name:?} document has no configFiles entries"))?
-                .content;
-            return Ok(content);
-        }
-    }
-    anyhow::bail!("patch file has no ExtensionServiceConfig document named {name:?}")
+fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
+    let document = documents
+        .iter()
+        .find(|doc| doc["kind"] == "ExtensionServiceConfig" && doc["name"] == name)
+        .with_context(|| {
+            format!("patch file has no ExtensionServiceConfig document named {name:?}")
+        })?;
+    let envelope: Envelope = yaml_serde::from_value(document.clone())
+        .with_context(|| format!("malformed {name:?} document"))?;
+    envelope
+        .config_files
+        .into_iter()
+        .next()
+        .map(|file| file.content)
+        .with_context(|| format!("{name:?} document has no configFiles entries"))
 }
 
 pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("failed to read patch file {}: {e}", path.display()))?;
-    let segments = split_segments(&raw);
+    let docs = documents(&raw)?;
 
-    let awg_content = segment_content(&segments, "awg")?;
-    let awg: AwgConfig = serde_yaml::from_str(&awg_content)
+    let awg_content = segment_content(&docs, "awg")?;
+    let awg: AwgConfig = yaml_serde::from_str(&awg_content)
         .map_err(|e| anyhow::anyhow!("malformed \"awg\" document content: {e}"))?;
     awg::config::validate(&awg).map_err(|e| anyhow::anyhow!("invalid \"awg\" config: {e}"))?;
 
-    let router_content = segment_content(&segments, "router")?;
-    let router: RouterConfig = serde_yaml::from_str(&router_content)
+    let router_content = segment_content(&docs, "router")?;
+    let router: RouterConfig = yaml_serde::from_str(&router_content)
         .map_err(|e| anyhow::anyhow!("malformed \"router\" document content: {e}"))?;
     router::config::validate(&router)
         .map_err(|e| anyhow::anyhow!("invalid \"router\" config: {e}"))?;
 
-    let credentials_content = segment_content(&segments, "mikrotik")?;
+    let credentials_content = segment_content(&docs, "mikrotik")?;
     let credentials = credentials::parse_from_yaml(&credentials_content)?;
 
     Ok(PatchFile {
@@ -114,42 +108,48 @@ mod tests {
 
     #[test]
     fn foreign_documents_are_ignored_when_extracting_owned_segments() {
-        let raw = [FOREIGN_DOC, AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join("---\n");
-        let segments = split_segments(&raw);
+        let docs = documents(&[FOREIGN_DOC, AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join(
+            "---
+",
+        ))
+        .unwrap();
         assert_eq!(
-            segment_content(&segments, "awg").unwrap().trim(),
+            segment_content(&docs, "awg").unwrap().trim(),
             "interfaces: []"
         );
     }
 
     #[test]
-    fn missing_awg_segment_is_an_error() {
-        let raw = [ROUTER_DOC, MIKROTIK_DOC].join("---\n");
-        let segments = split_segments(&raw);
-        assert!(segment_content(&segments, "awg").is_err());
+    fn each_of_the_three_documents_is_required() {
+        for (name, others) in [
+            ("awg", [ROUTER_DOC, MIKROTIK_DOC]),
+            ("router", [AWG_DOC, MIKROTIK_DOC]),
+            ("mikrotik", [AWG_DOC, ROUTER_DOC]),
+        ] {
+            let docs = documents(&others.join(
+                "---
+",
+            ))
+            .unwrap();
+            assert!(segment_content(&docs, name).is_err(), "{name}");
+        }
     }
 
     #[test]
-    fn missing_router_segment_is_an_error() {
-        let raw = [AWG_DOC, MIKROTIK_DOC].join("---\n");
-        let segments = split_segments(&raw);
-        assert!(segment_content(&segments, "router").is_err());
-    }
+    fn a_malformed_document_is_reported_as_such_not_as_missing() {
+        let dir = std::env::temp_dir().join(format!("routeros-malformed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("router1.yaml");
+        let broken = ROUTER_DOC.replace("name: router", "name: [router");
+        std::fs::write(&path, [AWG_DOC, &broken, MIKROTIK_DOC].join("---\n")).unwrap();
 
-    #[test]
-    fn missing_mikrotik_segment_is_an_error() {
-        let raw = [AWG_DOC, ROUTER_DOC].join("---\n");
-        let segments = split_segments(&raw);
-        assert!(segment_content(&segments, "mikrotik").is_err());
+        let err = read_patch_file(&path).err().unwrap().to_string();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!err.contains("no ExtensionServiceConfig document"), "{err}");
     }
 
     #[test]
     fn nonexistent_file_is_an_error() {
         assert!(read_patch_file(Path::new("/nonexistent/router1.yaml")).is_err());
-    }
-
-    #[test]
-    fn split_of_empty_file_is_empty() {
-        assert!(split_segments("").is_empty());
     }
 }

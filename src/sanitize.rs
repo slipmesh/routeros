@@ -1,5 +1,5 @@
 //! Allow-list validation for any string sourced from the patch file (`awg`/`router` documents,
-//! themselves already validated by `patches generate`/`awg::config::validate`/
+//! themselves already validated by `slipmesh-taloscfg generate`/`awg::config::validate`/
 //! `router::config::validate`) before it reaches a RouterOS command attribute. `mikrotik-rs`'s
 //! `CommandBuilder` transmits each attribute as its own length-prefixed API word - there's no
 //! single concatenated command line for an embedded separator to break out of the way there is for

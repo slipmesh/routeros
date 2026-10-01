@@ -7,7 +7,7 @@ authors = ["slipmesh"]
 # mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio) is AGPL-3.0-only
 # - any binary linking it must itself be AGPL-3.0-compatible.
 license = "AGPL-3.0-only"
-description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by talos-extensions/patches from mesh.yaml"
+description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by slipmesh-taloscfg from slipmesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
 
 [[bin]]

@@ -1,8 +1,6 @@
-//! Parses RouterOS API connection credentials from the `mikrotik` YAML document embedded in a
-//! `talos-extensions/patches`-generated patch file - a hand-authored, foreign (non-`OWNED_NAMES`)
-//! `ExtensionServiceConfig` document that `patches generate` preserves byte-for-byte across
-//! regeneration. Fully externally managed (a human edits/rotates it directly in the patch file),
-//! `routeros` only ever reads it.
+//! Parses RouterOS API connection credentials from the `mikrotik` document of the node's patch
+//! file - a hand-written `kind: patch` document of `slipmesh.yaml` that `slipmesh-taloscfg
+//! generate` passes through to that node. `routeros` only ever reads it.
 
 use serde::Deserialize;
 

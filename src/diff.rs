@@ -160,8 +160,8 @@ impl HasId for CurrentWireguardInterface {
 }
 
 /// WireGuard clamps a Curve25519 private key the moment it loads one - byte 0 `&= 248`, byte 31
-/// `&= 127` then `|= 64` - and RouterOS hands back the clamped form on read. `patches generate`
-/// emits the key as generated, unclamped, so comparing the two byte-for-byte never matches: the
+/// `&= 127` then `|= 64` - and RouterOS hands back the clamped form on read. `slipmesh-taloscfg
+/// generate` emits the key as generated, unclamped, so comparing the two byte-for-byte never matches: the
 /// diff recomputes the same "update" on every run and each apply rewrites a live WireGuard
 /// interface for nothing. That is not cosmetic - rewriting an interface with an established peer
 /// and an OSPF adjacency on it is the single most disruptive operation this tool performs.
@@ -203,7 +203,7 @@ pub fn wireguard_interfaces(
     )
 }
 
-/// The exact pair observed live on a real device: `patches generate`'s key as written into the patch file,
+/// The exact pair observed live on a real device: `slipmesh-taloscfg generate`'s key as written into the patch file,
 /// and what RouterOS returned for the same interface. Before clamping these compared unequal and
 /// the tool recomputed the same update forever.
 #[cfg(test)]
@@ -1418,7 +1418,7 @@ mod bfd_configuration_tests {
         assert_eq!(plan.add.len(), 1);
     }
 
-    /// Switching BFD off in mesh.yaml empties the desired set, which has to take the device's
+    /// Switching BFD off in slipmesh.yaml empties the desired set, which has to take the device's
     /// entries with it rather than leaving them behind.
     #[test]
     fn no_desired_entries_removes_what_the_device_has() {

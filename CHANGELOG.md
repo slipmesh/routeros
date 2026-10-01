@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-10-01
+
+### Build system 🛠️
+
+- Stop tracking Cargo.lock
+
+### Documentation 📚
+
+- Describe the patch file as slipmesh-taloscfg generates it
+
+### Fixed 🐛
+
+- Report a malformed patch file instead of a missing document
+- Name the binary and its input correctly in --help
+
 ## [0.2.1] - 2026-09-19
 
 ### Fixed 🐛

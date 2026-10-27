@@ -158,6 +158,15 @@ fn set_command(path: &str, id: &str, attrs: &[(&str, &str)]) -> CommandBuilder<C
     )
 }
 
+/// `unset` returns a property to its default; RouterOS addresses the row as `numbers` here, not
+/// `.id` as `set` does.
+fn unset_command(path: &str, id: &str, property: &str) -> CommandBuilder<Cmd> {
+    CommandBuilder::new()
+        .command(&format!("{path}/unset"))
+        .attribute("numbers", Some(id))
+        .attribute("value-name", Some(property))
+}
+
 async fn add(
     device: &MikrotikDevice,
     path: &str,
@@ -278,7 +287,8 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
         public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
         allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
         endpoint_address: get(row, "endpoint-address").map(str::to_string),
-        endpoint_port: get_opt_u16(row, "endpoint-port")?,
+        // A cleared port reads back as `0`, see `peer_port_and_keepalive`.
+        endpoint_port: get_opt_u16(row, "endpoint-port")?.filter(|&p| p != 0),
         persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?,
         disabled: get_bool_flag(row, "disabled"),
         id,
@@ -295,7 +305,19 @@ pub async fn read_wireguard_peers(
         .collect()
 }
 
-fn wireguard_peer_attrs(d: &DesiredWireguardPeer) -> Vec<(&str, &str)> {
+/// Peers have no `unset`, so an absent port or keepalive is written as `0`, RouterOS's default;
+/// an empty value is refused for both.
+fn peer_port_and_keepalive(d: &DesiredWireguardPeer) -> [String; 2] {
+    [
+        d.endpoint_port.unwrap_or(0).to_string(),
+        d.persistent_keepalive.unwrap_or(0).to_string(),
+    ]
+}
+
+fn wireguard_peer_attrs<'a>(
+    d: &'a DesiredWireguardPeer,
+    [port, keepalive]: &'a [String; 2],
+) -> Vec<(&'a str, &'a str)> {
     vec![
         ("interface", d.interface.as_str()),
         ("comment", d.name.as_str()),
@@ -306,6 +328,8 @@ fn wireguard_peer_attrs(d: &DesiredWireguardPeer) -> Vec<(&str, &str)> {
             "endpoint-address",
             d.endpoint_address.as_deref().unwrap_or_default(),
         ),
+        ("endpoint-port", port),
+        ("persistent-keepalive", keepalive),
         ("disabled", if d.disabled { "yes" } else { "no" }),
     ]
 }
@@ -325,32 +349,23 @@ pub async fn apply_wireguard_peers(
         remove(device, WIREGUARD_PEERS_PATH, id).await?;
     }
     for d in &plan.add {
-        let mut a = wireguard_peer_attrs(d);
-        let port_s;
-        let ka_s;
-        if let Some(p) = d.endpoint_port {
-            port_s = p.to_string();
-            a.push(("endpoint-port", &port_s));
-        }
-        if let Some(k) = d.persistent_keepalive {
-            ka_s = k.to_string();
-            a.push(("persistent-keepalive", &ka_s));
-        }
-        add(device, WIREGUARD_PEERS_PATH, &a).await?;
+        let numbers = peer_port_and_keepalive(d);
+        add(
+            device,
+            WIREGUARD_PEERS_PATH,
+            &wireguard_peer_attrs(d, &numbers),
+        )
+        .await?;
     }
     for (id, d) in &plan.update {
-        let mut a = wireguard_peer_attrs(d);
-        let port_s;
-        let ka_s;
-        if let Some(p) = d.endpoint_port {
-            port_s = p.to_string();
-            a.push(("endpoint-port", &port_s));
-        }
-        if let Some(k) = d.persistent_keepalive {
-            ka_s = k.to_string();
-            a.push(("persistent-keepalive", &ka_s));
-        }
-        set(device, WIREGUARD_PEERS_PATH, id, &a).await?;
+        let numbers = peer_port_and_keepalive(d);
+        set(
+            device,
+            WIREGUARD_PEERS_PATH,
+            id,
+            &wireguard_peer_attrs(d, &numbers),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -939,9 +954,12 @@ fn ospf_template_attrs(d: &DesiredOspfInterfaceTemplate) -> Vec<(&str, &str)> {
 }
 
 /// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
+/// `unset_passive` names the updated rows whose `passive` flag has to go, see
+/// `diff::passive_to_unset`.
 pub async fn apply_ospf_interface_templates(
     device: &MikrotikDevice,
     plan: &Plan<DesiredOspfInterfaceTemplate>,
+    unset_passive: &[String],
 ) -> anyhow::Result<()> {
     for id in &plan.remove {
         remove(device, OSPF_TEMPLATE_PATH, id).await?;
@@ -963,6 +981,9 @@ pub async fn apply_ospf_interface_templates(
             a.push(("cost", &cost_s));
         }
         set(device, OSPF_TEMPLATE_PATH, id, &a).await?;
+    }
+    for id in unset_passive {
+        execute(device, unset_command(OSPF_TEMPLATE_PATH, id, "passive")).await?;
     }
     Ok(())
 }
@@ -1383,10 +1404,41 @@ mod tests {
             persistent_keepalive: None,
             disabled: false,
         };
-        let a = wireguard_peer_attrs(&d);
+        let numbers = peer_port_and_keepalive(&d);
+        let a = wireguard_peer_attrs(&d, &numbers);
         assert!(sends_word(
             set_command(WIREGUARD_PEERS_PATH, "*1", &a),
             "=endpoint-address="
         ));
+        for word in ["=endpoint-port=0", "=persistent-keepalive=0"] {
+            assert!(
+                sends_word(set_command(WIREGUARD_PEERS_PATH, "*1", &a), word),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cleared_endpoint_port_reads_back_as_none() {
+        let r = row(&[
+            (".id", "*1"),
+            ("interface", "mesh-a"),
+            ("endpoint-port", "0"),
+        ]);
+        assert_eq!(parse_wireguard_peer(&r).unwrap().endpoint_port, None);
+    }
+
+    #[test]
+    fn passive_is_cleared_by_unset_on_numbers() {
+        let cmd = unset_command(OSPF_TEMPLATE_PATH, "*1", "passive");
+        assert!(sends_word(
+            unset_command(OSPF_TEMPLATE_PATH, "*1", "passive"),
+            "/routing/ospf/interface-template/unset"
+        ));
+        assert!(sends_word(
+            unset_command(OSPF_TEMPLATE_PATH, "*1", "passive"),
+            "=numbers=*1"
+        ));
+        assert!(sends_word(cmd, "=value-name=passive"));
     }
 }

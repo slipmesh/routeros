@@ -221,7 +221,8 @@ pub async fn run(
         &template_plan,
     );
     if apply && !template_plan.is_empty() {
-        mikrotik::apply_ospf_interface_templates(device, &template_plan).await?;
+        let unset_passive = crate::diff::passive_to_unset(&current_templates, &template_plan);
+        mikrotik::apply_ospf_interface_templates(device, &template_plan, &unset_passive).await?;
     }
 
     // 12. ip firewall address-list (bgp-networks).

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-10-27
+
+### Build system 🛠️
+
+- Require rustls 0.23.46, rustls-native-certs 0.8.5 and tokio 1.54.1 (#12)
+- Require mikrotik-rs 0.10, spelling out empty attribute values (#13)
+
+### CI/CD ⚙️
+
+- Check every push and build releases through the shared workflows (#11)
+
+### Fixed 🐛
+
+- Keep wireguard private keys out of --diff output (#16)
+
 ## [0.2.2] - 2026-10-01
 
 ### Build system 🛠️

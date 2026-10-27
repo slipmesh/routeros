@@ -21,13 +21,10 @@ jobs:
     needs: rust
     if: github.ref_type == 'tag'
     uses: slipmesh/.github/.github/workflows/release.yml@ci/reusable-workflows
-    # release.yml's promote job asks for packages: write; with promote off it never runs, but the
-    # grant still has to cover what the called workflow declares.
     permissions:
       contents: write
-      packages: write
+      packages: read
     with:
-      promote: false
       download-binaries: true
       prepare: |
         mkdir dist

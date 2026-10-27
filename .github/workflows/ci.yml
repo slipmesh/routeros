@@ -13,14 +13,14 @@ permissions:
 
 jobs:
   rust:
-    uses: slipmesh/.github/.github/workflows/rust.yml@ci/reusable-workflows
+    uses: slipmesh/.github/.github/workflows/rust.yml@v1
     with:
       binaries: slipmesh-routeros
 
   release:
     needs: rust
     if: github.ref_type == 'tag'
-    uses: slipmesh/.github/.github/workflows/release.yml@ci/reusable-workflows
+    uses: slipmesh/.github/.github/workflows/release.yml@v1
     permissions:
       contents: write
       packages: read

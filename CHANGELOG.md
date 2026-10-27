@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] - 2026-10-27
+
+### CI/CD ⚙️
+
+- Open release PRs from a workflow and release on their merge (#18)
+
+### Fixed 🐛
+
+- Clear a dropped wireguard port, keepalive or ospf passive flag (#19)
+
 ## [0.2.3] - 2026-10-27
 
 ### Build system 🛠️

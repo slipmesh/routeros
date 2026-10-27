@@ -20,6 +20,7 @@ use crate::diff::{
     DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
     DesiredWireguardPeer, Plan,
 };
+use mikrotik_rs::proto::command::Cmd;
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -106,10 +107,7 @@ pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice
     Ok(device)
 }
 
-async fn execute(
-    device: &MikrotikDevice,
-    cmd: CommandBuilder<mikrotik_rs::proto::command::Cmd>,
-) -> anyhow::Result<Vec<Row>> {
+async fn execute(device: &MikrotikDevice, cmd: CommandBuilder<Cmd>) -> anyhow::Result<Vec<Row>> {
     let mut rx = device
         .send_command(cmd.build())
         .await
@@ -140,16 +138,32 @@ async fn print(device: &MikrotikDevice, path: &str) -> anyhow::Result<Vec<Row>> 
     .await
 }
 
+fn with_attributes(mut b: CommandBuilder<Cmd>, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
+    for (k, v) in attrs {
+        b = b.attribute(k, Some(v));
+    }
+    b
+}
+
+fn add_command(path: &str, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
+    with_attributes(CommandBuilder::new().command(&format!("{path}/add")), attrs)
+}
+
+fn set_command(path: &str, id: &str, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
+    with_attributes(
+        CommandBuilder::new()
+            .command(&format!("{path}/set"))
+            .attribute(".id", Some(id)),
+        attrs,
+    )
+}
+
 async fn add(
     device: &MikrotikDevice,
     path: &str,
-    attrs: &[(&str, Option<&str>)],
+    attrs: &[(&str, &str)],
 ) -> anyhow::Result<String> {
-    let mut b = CommandBuilder::new().command(&format!("{path}/add"));
-    for (k, v) in attrs {
-        b = b.attribute(k, *v);
-    }
-    let rows = execute(device, b).await?;
+    let rows = execute(device, add_command(path, attrs)).await?;
     // `/add` typically replies with a single row carrying the new object's `.id` (`=ret=*1`) - not
     // load-bearing for callers here (every apply_* re-reads on the next run), so a missing id in
     // the reply is tolerated rather than treated as a hard error.
@@ -164,15 +178,9 @@ async fn set(
     device: &MikrotikDevice,
     path: &str,
     id: &str,
-    attrs: &[(&str, Option<&str>)],
+    attrs: &[(&str, &str)],
 ) -> anyhow::Result<()> {
-    let mut b = CommandBuilder::new()
-        .command(&format!("{path}/set"))
-        .attribute(".id", Some(id));
-    for (k, v) in attrs {
-        b = b.attribute(k, *v);
-    }
-    execute(device, b).await?;
+    execute(device, set_command(path, id, attrs)).await?;
     Ok(())
 }
 
@@ -232,10 +240,10 @@ pub async fn apply_wireguard_interfaces(
             device,
             WIREGUARD_PATH,
             &[
-                ("name", Some(d.name.as_str())),
-                ("listen-port", Some(&d.listen_port.to_string())),
-                ("private-key", Some(d.private_key_b64.as_str())),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("name", d.name.as_str()),
+                ("listen-port", &d.listen_port.to_string()),
+                ("private-key", d.private_key_b64.as_str()),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await?;
@@ -246,9 +254,9 @@ pub async fn apply_wireguard_interfaces(
             WIREGUARD_PATH,
             id,
             &[
-                ("listen-port", Some(&d.listen_port.to_string())),
-                ("private-key", Some(d.private_key_b64.as_str())),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("listen-port", &d.listen_port.to_string()),
+                ("private-key", d.private_key_b64.as_str()),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await?;
@@ -287,6 +295,21 @@ pub async fn read_wireguard_peers(
         .collect()
 }
 
+fn wireguard_peer_attrs(d: &DesiredWireguardPeer) -> Vec<(&str, &str)> {
+    vec![
+        ("interface", d.interface.as_str()),
+        ("comment", d.name.as_str()),
+        ("public-key", d.public_key_b64.as_str()),
+        ("allowed-address", d.allowed_address.as_str()),
+        // An empty value clears an endpoint the device still holds; omitting it would keep that.
+        (
+            "endpoint-address",
+            d.endpoint_address.as_deref().unwrap_or_default(),
+        ),
+        ("disabled", if d.disabled { "yes" } else { "no" }),
+    ]
+}
+
 /// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for the general
 /// reason (a value-level change is a remove+add pair, not an update, and adding before removing
 /// risks RouterOS rejecting the add as a duplicate of the not-yet-removed old row). Not
@@ -298,44 +321,34 @@ pub async fn apply_wireguard_peers(
     device: &MikrotikDevice,
     plan: &Plan<DesiredWireguardPeer>,
 ) -> anyhow::Result<()> {
-    fn attrs(d: &DesiredWireguardPeer) -> Vec<(&str, Option<&str>)> {
-        vec![
-            ("interface", Some(d.interface.as_str())),
-            ("comment", Some(d.name.as_str())),
-            ("public-key", Some(d.public_key_b64.as_str())),
-            ("allowed-address", Some(d.allowed_address.as_str())),
-            ("endpoint-address", d.endpoint_address.as_deref()),
-            ("disabled", Some(if d.disabled { "yes" } else { "no" })),
-        ]
-    }
     for id in &plan.remove {
         remove(device, WIREGUARD_PEERS_PATH, id).await?;
     }
     for d in &plan.add {
-        let mut a = attrs(d);
+        let mut a = wireguard_peer_attrs(d);
         let port_s;
         let ka_s;
         if let Some(p) = d.endpoint_port {
             port_s = p.to_string();
-            a.push(("endpoint-port", Some(&port_s)));
+            a.push(("endpoint-port", &port_s));
         }
         if let Some(k) = d.persistent_keepalive {
             ka_s = k.to_string();
-            a.push(("persistent-keepalive", Some(&ka_s)));
+            a.push(("persistent-keepalive", &ka_s));
         }
         add(device, WIREGUARD_PEERS_PATH, &a).await?;
     }
     for (id, d) in &plan.update {
-        let mut a = attrs(d);
+        let mut a = wireguard_peer_attrs(d);
         let port_s;
         let ka_s;
         if let Some(p) = d.endpoint_port {
             port_s = p.to_string();
-            a.push(("endpoint-port", Some(&port_s)));
+            a.push(("endpoint-port", &port_s));
         }
         if let Some(k) = d.persistent_keepalive {
             ka_s = k.to_string();
-            a.push(("persistent-keepalive", Some(&ka_s)));
+            a.push(("persistent-keepalive", &ka_s));
         }
         set(device, WIREGUARD_PEERS_PATH, id, &a).await?;
     }
@@ -395,9 +408,9 @@ pub async fn apply_ip_addresses(
             device,
             IP_ADDRESS_PATH,
             &[
-                ("address", Some(d.address.as_str())),
-                ("interface", Some(d.interface.as_str())),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("address", d.address.as_str()),
+                ("interface", d.interface.as_str()),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await?;
@@ -407,7 +420,7 @@ pub async fn apply_ip_addresses(
             device,
             IP_ADDRESS_PATH,
             id,
-            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+            &[("disabled", if d.disabled { "yes" } else { "no" })],
         )
         .await?;
     }
@@ -500,9 +513,9 @@ pub async fn apply_list_members(
             device,
             LIST_MEMBER_PATH,
             &[
-                ("list", Some(d.list.as_str())),
-                ("interface", Some(d.interface.as_str())),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("list", d.list.as_str()),
+                ("interface", d.interface.as_str()),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await?;
@@ -512,7 +525,7 @@ pub async fn apply_list_members(
             device,
             LIST_MEMBER_PATH,
             id,
-            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+            &[("disabled", if d.disabled { "yes" } else { "no" })],
         )
         .await?;
     }
@@ -557,9 +570,9 @@ pub async fn apply_loopback_bridge(
             device,
             BRIDGE_PATH,
             &[
-                ("name", Some(d.name.as_str())),
-                ("protocol-mode", Some("none")),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("name", d.name.as_str()),
+                ("protocol-mode", "none"),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await
@@ -569,7 +582,7 @@ pub async fn apply_loopback_bridge(
                 device,
                 BRIDGE_PATH,
                 &id,
-                &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+                &[("disabled", if d.disabled { "yes" } else { "no" })],
             )
             .await
         }
@@ -648,8 +661,8 @@ pub async fn apply_ipv6_addresses(
     }
     for d in &plan.add {
         let mut attrs = vec![
-            ("address", Some(d.address.as_str())),
-            ("interface", Some(d.interface.as_str())),
+            ("address", d.address.as_str()),
+            ("interface", d.interface.as_str()),
         ];
         attrs.extend(ipv6_address_settings(d));
         add(device, IPV6_ADDRESS_PATH, &attrs).await?;
@@ -662,8 +675,8 @@ pub async fn apply_ipv6_addresses(
 
 /// `auto-link-local` is sent only when set: RouterOS rejects it on an address that is not
 /// link-local, whatever the value.
-fn ipv6_address_settings(d: &DesiredIpv6Address) -> Vec<(&'static str, Option<&'static str>)> {
-    let yes_no = |on: bool| Some(if on { "yes" } else { "no" });
+fn ipv6_address_settings(d: &DesiredIpv6Address) -> Vec<(&'static str, &'static str)> {
+    let yes_no = |on: bool| if on { "yes" } else { "no" };
     let mut attrs = vec![("advertise", yes_no(d.advertise))];
     if let Some(auto_link_local) = d.auto_link_local {
         attrs.push(("auto-link-local", yes_no(auto_link_local)));
@@ -720,16 +733,16 @@ pub async fn apply_ospf_instance(
             device,
             OSPF_INSTANCE_PATH,
             &[
-                ("name", Some(d.name.as_str())),
-                ("version", Some(&d.version.to_string())),
-                ("router-id", Some(&d.router_id.to_string())),
+                ("name", d.name.as_str()),
+                ("version", &d.version.to_string()),
+                ("router-id", &d.router_id.to_string()),
                 (
                     "redistribute",
-                    Some(if d.redistribute_connected {
+                    if d.redistribute_connected {
                         "connected"
                     } else {
                         ""
-                    }),
+                    },
                 ),
             ],
         )
@@ -741,15 +754,15 @@ pub async fn apply_ospf_instance(
                 OSPF_INSTANCE_PATH,
                 &id,
                 &[
-                    ("version", Some(&d.version.to_string())),
-                    ("router-id", Some(&d.router_id.to_string())),
+                    ("version", &d.version.to_string()),
+                    ("router-id", &d.router_id.to_string()),
                     (
                         "redistribute",
-                        Some(if d.redistribute_connected {
+                        if d.redistribute_connected {
                             "connected"
                         } else {
                             ""
-                        }),
+                        },
                     ),
                 ],
             )
@@ -795,9 +808,9 @@ pub async fn apply_ospf_area(
             device,
             OSPF_AREA_PATH,
             &[
-                ("name", Some(d.name.as_str())),
-                ("area-id", Some(d.area_id.as_str())),
-                ("instance", Some(d.instance.as_str())),
+                ("name", d.name.as_str()),
+                ("area-id", d.area_id.as_str()),
+                ("instance", d.instance.as_str()),
             ],
         )
         .await
@@ -807,7 +820,7 @@ pub async fn apply_ospf_area(
                 device,
                 OSPF_AREA_PATH,
                 &id,
-                &[("instance", Some(d.instance.as_str()))],
+                &[("instance", d.instance.as_str())],
             )
             .await
         }
@@ -850,10 +863,10 @@ pub async fn apply_bfd_configurations(
             device,
             BFD_CONFIG_PATH,
             &[
-                ("interfaces", Some(d.interfaces.as_str())),
-                ("min-rx", Some(d.min_rx.as_str())),
-                ("min-tx", Some(d.min_tx.as_str())),
-                ("multiplier", Some(multiplier.as_str())),
+                ("interfaces", d.interfaces.as_str()),
+                ("min-rx", d.min_rx.as_str()),
+                ("min-tx", d.min_tx.as_str()),
+                ("multiplier", multiplier.as_str()),
             ],
         )
         .await?;
@@ -865,10 +878,10 @@ pub async fn apply_bfd_configurations(
             BFD_CONFIG_PATH,
             id,
             &[
-                ("interfaces", Some(d.interfaces.as_str())),
-                ("min-rx", Some(d.min_rx.as_str())),
-                ("min-tx", Some(d.min_tx.as_str())),
-                ("multiplier", Some(multiplier.as_str())),
+                ("interfaces", d.interfaces.as_str()),
+                ("min-rx", d.min_rx.as_str()),
+                ("min-tx", d.min_tx.as_str()),
+                ("multiplier", multiplier.as_str()),
             ],
         )
         .await?;
@@ -903,50 +916,51 @@ pub async fn read_ospf_interface_templates(
     rows.iter().map(parse_ospf_template).collect()
 }
 
+fn ospf_template_attrs(d: &DesiredOspfInterfaceTemplate) -> Vec<(&str, &str)> {
+    let mut a = vec![
+        ("interfaces", d.interfaces.as_str()),
+        ("area", d.area.as_str()),
+    ];
+    if let Some(t) = &d.type_ {
+        a.push(("type", t.as_str()));
+    }
+    if let Some(h) = &d.hello_interval {
+        a.push(("hello-interval", h.as_str()));
+    }
+    if let Some(dead) = &d.dead_interval {
+        a.push(("dead-interval", dead.as_str()));
+    }
+    if d.passive {
+        a.push(("passive", ""));
+    }
+    a.push(("use-bfd", if d.use_bfd { "yes" } else { "no" }));
+    a.push(("disabled", if d.disabled { "yes" } else { "no" }));
+    a
+}
+
 /// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
 pub async fn apply_ospf_interface_templates(
     device: &MikrotikDevice,
     plan: &Plan<DesiredOspfInterfaceTemplate>,
 ) -> anyhow::Result<()> {
-    fn attrs(d: &DesiredOspfInterfaceTemplate) -> Vec<(&str, Option<&str>)> {
-        let mut a = vec![
-            ("interfaces", Some(d.interfaces.as_str())),
-            ("area", Some(d.area.as_str())),
-        ];
-        if let Some(t) = &d.type_ {
-            a.push(("type", Some(t.as_str())));
-        }
-        if let Some(h) = &d.hello_interval {
-            a.push(("hello-interval", Some(h.as_str())));
-        }
-        if let Some(dead) = &d.dead_interval {
-            a.push(("dead-interval", Some(dead.as_str())));
-        }
-        if d.passive {
-            a.push(("passive", None));
-        }
-        a.push(("use-bfd", Some(if d.use_bfd { "yes" } else { "no" })));
-        a.push(("disabled", Some(if d.disabled { "yes" } else { "no" })));
-        a
-    }
     for id in &plan.remove {
         remove(device, OSPF_TEMPLATE_PATH, id).await?;
     }
     for d in &plan.add {
-        let mut a = attrs(d);
+        let mut a = ospf_template_attrs(d);
         let cost_s;
         if let Some(c) = d.cost {
             cost_s = c.to_string();
-            a.push(("cost", Some(&cost_s)));
+            a.push(("cost", &cost_s));
         }
         add(device, OSPF_TEMPLATE_PATH, &a).await?;
     }
     for (id, d) in &plan.update {
-        let mut a = attrs(d);
+        let mut a = ospf_template_attrs(d);
         let cost_s;
         if let Some(c) = d.cost {
             cost_s = c.to_string();
-            a.push(("cost", Some(&cost_s)));
+            a.push(("cost", &cost_s));
         }
         set(device, OSPF_TEMPLATE_PATH, id, &a).await?;
     }
@@ -991,9 +1005,9 @@ pub async fn apply_bgp_networks(
             device,
             ADDRESS_LIST_PATH,
             &[
-                ("list", Some(d.list.as_str())),
-                ("address", Some(d.address.as_str())),
-                ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+                ("list", d.list.as_str()),
+                ("address", d.address.as_str()),
+                ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
         .await?;
@@ -1003,7 +1017,7 @@ pub async fn apply_bgp_networks(
             device,
             ADDRESS_LIST_PATH,
             id,
-            &[("disabled", Some(if d.disabled { "yes" } else { "no" }))],
+            &[("disabled", if d.disabled { "yes" } else { "no" })],
         )
         .await?;
     }
@@ -1051,10 +1065,10 @@ pub async fn apply_bgp_instance(
             device,
             BGP_INSTANCE_PATH,
             &[
-                ("name", Some(d.name.as_str())),
-                ("as", Some(&d.as_number.to_string())),
-                ("router-id", Some(&d.router_id.to_string())),
-                ("routing-table", Some(d.routing_table.as_str())),
+                ("name", d.name.as_str()),
+                ("as", &d.as_number.to_string()),
+                ("router-id", &d.router_id.to_string()),
+                ("routing-table", d.routing_table.as_str()),
             ],
         )
         .await
@@ -1065,8 +1079,8 @@ pub async fn apply_bgp_instance(
                 BGP_INSTANCE_PATH,
                 &id,
                 &[
-                    ("as", Some(&d.as_number.to_string())),
-                    ("router-id", Some(&d.router_id.to_string())),
+                    ("as", &d.as_number.to_string()),
+                    ("router-id", &d.router_id.to_string()),
                 ],
             )
             .await
@@ -1118,15 +1132,15 @@ pub async fn apply_bgp_connections(
     device: &MikrotikDevice,
     plan: &Plan<DesiredBgpConnection>,
 ) -> anyhow::Result<()> {
-    fn attrs(d: &DesiredBgpConnection) -> Vec<(&str, Option<&str>)> {
+    fn attrs(d: &DesiredBgpConnection) -> Vec<(&str, &str)> {
         vec![
-            ("name", Some(d.name.as_str())),
-            ("instance", Some(d.instance.as_str())),
-            ("local.role", Some(d.local_role.as_str())),
-            ("multihop", Some(if d.multihop { "yes" } else { "no" })),
-            ("afi", Some(d.afi.as_str())),
-            ("output.network", Some(d.output_network.as_str())),
-            ("disabled", Some(if d.disabled { "yes" } else { "no" })),
+            ("name", d.name.as_str()),
+            ("instance", d.instance.as_str()),
+            ("local.role", d.local_role.as_str()),
+            ("multihop", if d.multihop { "yes" } else { "no" }),
+            ("afi", d.afi.as_str()),
+            ("output.network", d.output_network.as_str()),
+            ("disabled", if d.disabled { "yes" } else { "no" }),
         ]
     }
     for id in &plan.remove {
@@ -1136,8 +1150,8 @@ pub async fn apply_bgp_connections(
         let mut a = attrs(d);
         let local_s = d.local_address.to_string();
         let remote_s = d.remote_address.to_string();
-        a.push(("local.address", Some(&local_s)));
-        a.push(("remote.address", Some(&remote_s)));
+        a.push(("local.address", &local_s));
+        a.push(("remote.address", &remote_s));
         add(device, BGP_CONNECTION_PATH, &a).await?;
     }
     for (id, d) in &plan.update {
@@ -1147,8 +1161,8 @@ pub async fn apply_bgp_connections(
         let mut a = attrs(d);
         let local_s = d.local_address.to_string();
         let remote_s = d.remote_address.to_string();
-        a.push(("local.address", Some(&local_s)));
-        a.push(("remote.address", Some(&remote_s)));
+        a.push(("local.address", &local_s));
+        a.push(("remote.address", &remote_s));
         set(device, BGP_CONNECTION_PATH, id, &a).await?;
     }
     Ok(())
@@ -1288,7 +1302,7 @@ mod tests {
     #[test]
     fn ipv6_address_settings_send_auto_link_local_when_set() {
         let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
-        assert!(settings.contains(&("auto-link-local", Some("no"))));
+        assert!(settings.contains(&("auto-link-local", "no")));
     }
 
     #[test]
@@ -1323,5 +1337,55 @@ mod tests {
         assert_eq!(c.remote_address, "fd00::2".parse::<Ipv6Addr>().unwrap());
         assert!(c.multihop);
         assert_eq!(c.afi, "ip");
+    }
+
+    /// Whether the encoded command carries `word` as one API word (one-byte length prefix).
+    fn sends_word(cmd: CommandBuilder<Cmd>, word: &str) -> bool {
+        let mut encoded = vec![u8::try_from(word.len()).unwrap()];
+        encoded.extend_from_slice(word.as_bytes());
+        cmd.build()
+            .data()
+            .windows(encoded.len())
+            .any(|w| w == encoded)
+    }
+
+    #[test]
+    fn passive_ospf_template_sends_the_valueless_passive_word() {
+        let d = DesiredOspfInterfaceTemplate {
+            interfaces: "router-lo".to_string(),
+            use_bfd: false,
+            area: "backbone".to_string(),
+            type_: None,
+            cost: None,
+            hello_interval: None,
+            dead_interval: None,
+            passive: true,
+            disabled: false,
+        };
+        let a = ospf_template_attrs(&d);
+        assert!(sends_word(add_command(OSPF_TEMPLATE_PATH, &a), "=passive="));
+        assert!(sends_word(
+            set_command(OSPF_TEMPLATE_PATH, "*1", &a),
+            "=passive="
+        ));
+    }
+
+    #[test]
+    fn peer_without_endpoint_clears_endpoint_address() {
+        let d = DesiredWireguardPeer {
+            interface: "mesh-a".to_string(),
+            name: "node-a".to_string(),
+            public_key_b64: "AAAA".to_string(),
+            allowed_address: "0.0.0.0/0".to_string(),
+            endpoint_address: None,
+            endpoint_port: None,
+            persistent_keepalive: None,
+            disabled: false,
+        };
+        let a = wireguard_peer_attrs(&d);
+        assert!(sends_word(
+            set_command(WIREGUARD_PEERS_PATH, "*1", &a),
+            "=endpoint-address="
+        ));
     }
 }

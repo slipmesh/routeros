@@ -136,11 +136,40 @@ pub fn is_raw_orphan_id(interface: &str) -> bool {
 
 // ── interface wireguard (exclusive) ──
 
+/// A base64 WireGuard private key whose `Debug` hides it, since `--diff` prints plans through
+/// `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PrivateKey(String);
+
+impl PrivateKey {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PrivateKey {
+    fn from(b64: String) -> Self {
+        Self(b64)
+    }
+}
+
+impl From<&str> for PrivateKey {
+    fn from(b64: &str) -> Self {
+        Self(b64.to_string())
+    }
+}
+
+impl std::fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredWireguardInterface {
     pub name: String,
     pub listen_port: u16,
-    pub private_key_b64: String,
+    pub private_key_b64: PrivateKey,
     pub disabled: bool,
 }
 
@@ -149,7 +178,7 @@ pub struct CurrentWireguardInterface {
     pub id: String,
     pub name: String,
     pub listen_port: u16,
-    pub private_key_b64: String,
+    pub private_key_b64: PrivateKey,
     pub disabled: bool,
 }
 
@@ -197,7 +226,8 @@ pub fn wireguard_interfaces(
         |c| c.id.clone(),
         |c, d| {
             c.listen_port == d.listen_port
-                && clamp_wg_key(&c.private_key_b64) == clamp_wg_key(&d.private_key_b64)
+                && clamp_wg_key(c.private_key_b64.expose())
+                    == clamp_wg_key(d.private_key_b64.expose())
                 && c.disabled == d.disabled
         },
     )
@@ -765,7 +795,7 @@ mod wireguard_interfaces_tests {
         DesiredWireguardInterface {
             name: name.to_string(),
             listen_port: port,
-            private_key_b64: "key".to_string(),
+            private_key_b64: "key".into(),
             disabled: false,
         }
     }
@@ -775,8 +805,21 @@ mod wireguard_interfaces_tests {
             id: id.to_string(),
             name: name.to_string(),
             listen_port: port,
-            private_key_b64: "key".to_string(),
+            private_key_b64: "key".into(),
             disabled: false,
+        }
+    }
+
+    #[test]
+    fn debug_output_never_carries_the_private_key() {
+        const KEY: &str = "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKA=";
+        let mut d = desired("mesh-fra", 51820);
+        d.private_key_b64 = KEY.into();
+        let mut c = current("*1", "mesh-fra", 51820);
+        c.private_key_b64 = KEY.into();
+        for printed in [format!("{d:?}"), format!("{c:?}")] {
+            assert!(!printed.contains(KEY), "{printed}");
+            assert!(printed.contains("mesh-fra"), "{printed}");
         }
     }
 

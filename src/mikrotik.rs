@@ -206,7 +206,7 @@ fn parse_wireguard_interface(row: &Row) -> anyhow::Result<CurrentWireguardInterf
         listen_port: get_required(row, "listen-port", &id)?
             .parse()
             .map_err(|e| anyhow::anyhow!("listen-port is not a u16: {e}"))?,
-        private_key_b64: get(row, "private-key").unwrap_or_default().to_string(),
+        private_key_b64: get(row, "private-key").unwrap_or_default().into(),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -242,7 +242,7 @@ pub async fn apply_wireguard_interfaces(
             &[
                 ("name", d.name.as_str()),
                 ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.as_str()),
+                ("private-key", d.private_key_b64.expose()),
                 ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
@@ -255,7 +255,7 @@ pub async fn apply_wireguard_interfaces(
             id,
             &[
                 ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.as_str()),
+                ("private-key", d.private_key_b64.expose()),
                 ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )

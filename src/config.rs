@@ -132,7 +132,7 @@ pub fn desired_state(
         wireguard_interfaces.push(DesiredWireguardInterface {
             name: iface.name.clone(),
             listen_port: iface.listen_port,
-            private_key_b64: iface.private_key.clone(),
+            private_key_b64: iface.private_key.clone().into(),
             disabled: false,
         });
         list_members.push(DesiredListMember {
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(state.wireguard_interfaces[0].name, "mesh-2");
         assert_eq!(state.wireguard_interfaces[0].listen_port, 51820);
         assert_eq!(
-            state.wireguard_interfaces[0].private_key_b64,
+            state.wireguard_interfaces[0].private_key_b64.expose(),
             "own-private-key"
         );
 

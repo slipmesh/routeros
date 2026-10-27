@@ -15,12 +15,10 @@ name = "slipmesh-routeros"
 path = "src/main.rs"
 
 [dependencies]
-# Local path deps on a sibling talos-extensions checkout, so a build here always compiles against
-# that repository's current source - this tool has to agree with the daemons field for field, and
-# depends on their own config types rather than restating them. A pinned git rev would decouple the
-# two; until then, both this repo's release workflow and a local build need the checkout present.
-awg = { path = "../talos-extensions/awg", default-features = false }
-router = { path = "../talos-extensions/router", default-features = false }
+# This tool has to agree with the daemons field for field, so it uses their own config types. The
+# tag names the talos-extensions release whose config format it targets.
+awg = { git = "https://github.com/slipmesh/talos-extensions", tag = "v0.4.0", default-features = false }
+router = { git = "https://github.com/slipmesh/talos-extensions", tag = "v0.4.0", default-features = false }
 
 base64 = "0.23"
 mikrotik-rs = { version = "0.9.0", features = ["tokio-tls"] }

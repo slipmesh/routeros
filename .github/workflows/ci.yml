@@ -1,0 +1,38 @@
+# There is no image to copy a release out of, so a tag's own run builds and tests the binaries it
+# attaches.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    uses: slipmesh/.github/.github/workflows/rust.yml@ci/reusable-workflows
+    with:
+      binaries: slipmesh-routeros
+
+  release:
+    needs: rust
+    if: github.ref_type == 'tag'
+    uses: slipmesh/.github/.github/workflows/release.yml@ci/reusable-workflows
+    # release.yml's promote job asks for packages: write; with promote off it never runs, but the
+    # grant still has to cover what the called workflow declares.
+    permissions:
+      contents: write
+      packages: write
+    with:
+      promote: false
+      download-binaries: true
+      prepare: |
+        mkdir dist
+        for arch in amd64 arm64; do
+          cp "binaries/$arch/release/slipmesh-routeros" "dist/slipmesh-routeros-linux-$arch"
+        done
+        (cd dist && sha256sum -- * > SHA256SUMS)
+      assets: dist/slipmesh-routeros-linux-amd64 dist/slipmesh-routeros-linux-arm64 dist/SHA256SUMS

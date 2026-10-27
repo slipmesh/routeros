@@ -1171,6 +1171,7 @@ pub async fn apply_bgp_connections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wg_key;
 
     fn row(pairs: &[(&str, &str)]) -> Row {
         pairs
@@ -1375,7 +1376,7 @@ mod tests {
         let d = DesiredWireguardPeer {
             interface: "mesh-a".to_string(),
             name: "node-a".to_string(),
-            public_key_b64: "AAAA".to_string(),
+            public_key_b64: wg_key("node-a"),
             allowed_address: "0.0.0.0/0".to_string(),
             endpoint_address: None,
             endpoint_port: None,

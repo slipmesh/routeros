@@ -378,6 +378,7 @@ pub fn desired_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wg_key;
     use awg::config::{InterfaceEntry, PeerEntry};
     use router::config::{BgpPeerEntry, NodeIdentity};
 
@@ -403,16 +404,16 @@ mod tests {
             name: name.to_string(),
             listen_port: port,
             addresses: vec![],
-            private_key: "own-private-key".to_string(),
+            private_key: wg_key("own"),
             obfuscation: Default::default(),
             handshake_stale_secs: None,
             peers: vec![],
         }
     }
 
-    fn peer(public_key: &str, endpoint: Option<&str>) -> PeerEntry {
+    fn peer(key_label: &str, endpoint: Option<&str>) -> PeerEntry {
         PeerEntry {
-            public_key: public_key.to_string(),
+            public_key: wg_key(key_label),
             name: None,
             endpoint: endpoint.map(str::to_string),
             allowed_ips: None,
@@ -493,12 +494,12 @@ mod tests {
         assert_eq!(state.wireguard_interfaces[0].listen_port, 51820);
         assert_eq!(
             state.wireguard_interfaces[0].private_key_b64.expose(),
-            "own-private-key"
+            wg_key("own")
         );
 
         assert_eq!(state.wireguard_peers.len(), 1);
         let p = &state.wireguard_peers[0];
-        assert_eq!(p.public_key_b64, "fra-pub");
+        assert_eq!(p.public_key_b64, wg_key("fra-pub"));
         assert_eq!(p.name, "2");
         assert_eq!(p.endpoint_address, Some("fra.example.com".to_string()));
         assert_eq!(p.endpoint_port, Some(51820));

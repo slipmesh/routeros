@@ -233,28 +233,42 @@ pub fn wireguard_interfaces(
     )
 }
 
-/// The exact pair observed live on a real device: `slipmesh-taloscfg generate`'s key as written into the patch file,
-/// and what RouterOS returned for the same interface. Before clamping these compared unequal and
-/// the tool recomputed the same update forever.
 #[cfg(test)]
 mod wg_key_tests {
     use super::*;
+    use crate::test_support::encode_wg_key;
 
-    const GENERATED: &str = "wj9IeKINz7myZ4I0xiX6mxe3c76gc0KEE8cU5oFTDvY=";
-    const AS_STORED: &str = "wD9IeKINz7myZ4I0xiX6mxe3c76gc0KEE8cU5oFTDnY=";
+    /// Every bit set: clamping clears the low three bits of byte 0 and the top bit of byte 31.
+    fn all_ones() -> (String, String) {
+        let mut stored = [0xFF; 32];
+        stored[0] = 0xF8;
+        stored[31] = 0x7F;
+        (encode_wg_key([0xFF; 32]), encode_wg_key(stored))
+    }
+
+    /// No bit set: clamping sets bit 6 of byte 31.
+    fn all_zeros() -> (String, String) {
+        let mut stored = [0x00; 32];
+        stored[31] = 0x40;
+        (encode_wg_key([0x00; 32]), encode_wg_key(stored))
+    }
 
     #[test]
     fn clamping_makes_a_generated_key_match_what_routeros_stores() {
-        assert_ne!(
-            GENERATED, AS_STORED,
-            "the two differ verbatim - that is the bug"
-        );
-        assert_eq!(clamp_wg_key(GENERATED), AS_STORED);
+        for (generated, as_stored) in [all_ones(), all_zeros()] {
+            assert_ne!(
+                generated, as_stored,
+                "the two differ verbatim - that is the bug"
+            );
+            assert_eq!(clamp_wg_key(&generated), as_stored);
+        }
     }
 
     #[test]
     fn clamping_an_already_clamped_key_is_a_no_op() {
-        assert_eq!(clamp_wg_key(AS_STORED), AS_STORED);
+        for (_, as_stored) in [all_ones(), all_zeros()] {
+            assert_eq!(clamp_wg_key(&as_stored), as_stored);
+        }
     }
 
     #[test]
@@ -790,12 +804,13 @@ mod passive_flag_tests {
 #[cfg(test)]
 mod wireguard_interfaces_tests {
     use super::*;
+    use crate::test_support::wg_key;
 
     fn desired(name: &str, port: u16) -> DesiredWireguardInterface {
         DesiredWireguardInterface {
             name: name.to_string(),
             listen_port: port,
-            private_key_b64: "key".into(),
+            private_key_b64: wg_key("interface").into(),
             disabled: false,
         }
     }
@@ -805,20 +820,20 @@ mod wireguard_interfaces_tests {
             id: id.to_string(),
             name: name.to_string(),
             listen_port: port,
-            private_key_b64: "key".into(),
+            private_key_b64: wg_key("interface").into(),
             disabled: false,
         }
     }
 
     #[test]
     fn debug_output_never_carries_the_private_key() {
-        const KEY: &str = "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKA=";
+        let key = wg_key("printed");
         let mut d = desired("mesh-fra", 51820);
-        d.private_key_b64 = KEY.into();
+        d.private_key_b64 = key.as_str().into();
         let mut c = current("*1", "mesh-fra", 51820);
-        c.private_key_b64 = KEY.into();
+        c.private_key_b64 = key.as_str().into();
         for printed in [format!("{d:?}"), format!("{c:?}")] {
-            assert!(!printed.contains(KEY), "{printed}");
+            assert!(!printed.contains(&key), "{printed}");
             assert!(printed.contains("mesh-fra"), "{printed}");
         }
     }
@@ -938,12 +953,13 @@ mod ip_addresses_tests {
 #[cfg(test)]
 mod wireguard_peers_tests {
     use super::*;
+    use crate::test_support::wg_key;
 
     fn desired(interface: &str, name: &str, endpoint: Option<&str>) -> DesiredWireguardPeer {
         DesiredWireguardPeer {
             interface: interface.to_string(),
             name: name.to_string(),
-            public_key_b64: "pub".to_string(),
+            public_key_b64: wg_key("peer"),
             allowed_address: "0.0.0.0/0,::/0".to_string(),
             endpoint_address: endpoint.map(str::to_string),
             endpoint_port: endpoint.map(|_| 51820),
@@ -966,7 +982,7 @@ mod wireguard_peers_tests {
                 id: "*1".to_string(),
                 interface: "mesh-fra".to_string(),
                 name: "fra".to_string(),
-                public_key_b64: "old-key".to_string(),
+                public_key_b64: wg_key("old"),
                 allowed_address: "0.0.0.0/0,::/0".to_string(),
                 endpoint_address: None,
                 endpoint_port: None,
@@ -977,7 +993,7 @@ mod wireguard_peers_tests {
                 id: "*2".to_string(),
                 interface: "mesh-stale".to_string(),
                 name: "stale".to_string(),
-                public_key_b64: "key".to_string(),
+                public_key_b64: wg_key("stale"),
                 allowed_address: "0.0.0.0/0,::/0".to_string(),
                 endpoint_address: None,
                 endpoint_port: None,
@@ -986,7 +1002,7 @@ mod wireguard_peers_tests {
             },
         ];
         let mut updated = desired("mesh-fra", "fra", None);
-        updated.public_key_b64 = "new-key".to_string();
+        updated.public_key_b64 = wg_key("new");
         let des = vec![updated.clone(), desired("mesh-lon", "lon", Some("1.2.3.4"))];
 
         let plan = wireguard_peers(&cur, &des);

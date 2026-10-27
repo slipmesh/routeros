@@ -8,6 +8,8 @@ mod mikrotik;
 mod patch;
 mod run;
 mod sanitize;
+#[cfg(test)]
+mod test_support;
 
 use clap::Parser;
 use std::io::IsTerminal;

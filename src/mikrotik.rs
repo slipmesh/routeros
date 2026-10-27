@@ -206,7 +206,7 @@ fn parse_wireguard_interface(row: &Row) -> anyhow::Result<CurrentWireguardInterf
         listen_port: get_required(row, "listen-port", &id)?
             .parse()
             .map_err(|e| anyhow::anyhow!("listen-port is not a u16: {e}"))?,
-        private_key_b64: get(row, "private-key").unwrap_or_default().to_string(),
+        private_key_b64: get(row, "private-key").unwrap_or_default().into(),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -242,7 +242,7 @@ pub async fn apply_wireguard_interfaces(
             &[
                 ("name", d.name.as_str()),
                 ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.as_str()),
+                ("private-key", d.private_key_b64.expose()),
                 ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
@@ -255,7 +255,7 @@ pub async fn apply_wireguard_interfaces(
             id,
             &[
                 ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.as_str()),
+                ("private-key", d.private_key_b64.expose()),
                 ("disabled", if d.disabled { "yes" } else { "no" }),
             ],
         )
@@ -1171,6 +1171,7 @@ pub async fn apply_bgp_connections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wg_key;
 
     fn row(pairs: &[(&str, &str)]) -> Row {
         pairs
@@ -1375,7 +1376,7 @@ mod tests {
         let d = DesiredWireguardPeer {
             interface: "mesh-a".to_string(),
             name: "node-a".to_string(),
-            public_key_b64: "AAAA".to_string(),
+            public_key_b64: wg_key("node-a"),
             allowed_address: "0.0.0.0/0".to_string(),
             endpoint_address: None,
             endpoint_port: None,

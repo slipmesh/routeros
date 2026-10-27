@@ -25,10 +25,10 @@ mikrotik-rs = { version = "0.9.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-rustls = { version = "0.23.45", default-features = false, features = ["aws-lc-rs"] }
-rustls-native-certs = "0.8.4"
+rustls = { version = "0.23.46", default-features = false, features = ["aws-lc-rs"] }
+rustls-native-certs = "0.8.5"
 serde = { version = "1.0.229", features = ["derive"] }
 yaml_serde = "0.10.7"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

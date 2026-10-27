@@ -505,6 +505,24 @@ impl HasId for CurrentOspfInterfaceTemplate {
     }
 }
 
+/// The updated templates whose `passive` flag the device has and desired drops. `set` can't clear
+/// it - `passive=no` leaves the flag on - so these need an `unset`.
+pub fn passive_to_unset(
+    current: &[CurrentOspfInterfaceTemplate],
+    plan: &Plan<DesiredOspfInterfaceTemplate>,
+) -> Vec<String> {
+    plan.update
+        .iter()
+        .filter(|(id, d)| {
+            !d.passive
+                && current
+                    .iter()
+                    .any(|c| &c.id == id && passive_flag_is_true(c.passive_raw.as_deref()))
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 pub fn ospf_interface_templates(
     current: &[CurrentOspfInterfaceTemplate],
     desired: &[DesiredOspfInterfaceTemplate],
@@ -1109,6 +1127,39 @@ mod ospf_interface_templates_tests {
             use_bfd: false,
             disabled: false,
         }
+    }
+
+    fn current_peer(
+        id: &str,
+        interfaces: &str,
+        passive_raw: Option<&str>,
+    ) -> CurrentOspfInterfaceTemplate {
+        CurrentOspfInterfaceTemplate {
+            id: id.to_string(),
+            interfaces: interfaces.to_string(),
+            area: "backbone".to_string(),
+            type_: Some("ptp".to_string()),
+            cost: Some(10),
+            hello_interval: Some("10s".to_string()),
+            dead_interval: Some("40s".to_string()),
+            passive_raw: passive_raw.map(str::to_string),
+            use_bfd: false,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn passive_is_unset_only_where_the_device_has_it_and_desired_does_not() {
+        let cur = vec![
+            current_peer("*1", "mesh-a", Some("")),
+            current_peer("*2", "mesh-b", None),
+        ];
+        let mut b = peer_desired("mesh-b");
+        b.cost = Some(20);
+        let des = vec![peer_desired("mesh-a"), b];
+        let plan = ospf_interface_templates(&cur, &des);
+        assert_eq!(plan.update.len(), 2);
+        assert_eq!(passive_to_unset(&cur, &plan), vec!["*1".to_string()]);
     }
 
     #[test]

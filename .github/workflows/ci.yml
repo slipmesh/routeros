@@ -13,14 +13,14 @@ permissions:
 
 jobs:
   rust:
-    uses: slipmesh/.github/.github/workflows/rust.yml@v1.1
+    uses: slipmesh/.github/.github/workflows/rust.yml@v1.2
     with:
       binaries: slipmesh-routeros
 
   tag:
     needs: rust
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: slipmesh/.github/.github/workflows/tag-release.yml@v1.1
+    uses: slipmesh/.github/.github/workflows/tag-release.yml@v1.2
     permissions:
       contents: write
 
@@ -28,7 +28,7 @@ jobs:
   release:
     needs: [rust, tag]
     if: ${{ !cancelled() && needs.rust.result == 'success' && (github.ref_type == 'tag' || needs.tag.outputs.tag != '') }}
-    uses: slipmesh/.github/.github/workflows/release.yml@v1.1
+    uses: slipmesh/.github/.github/workflows/release.yml@v1.2
     permissions:
       contents: write
       packages: read

@@ -1,39 +1,54 @@
-# There is no image to copy a release out of, so the run that releases builds and tests the
-# binaries it attaches.
+# Pull requests and pushes run the checks; only a merged release PR is built, in its own run, and
+# released with the binaries that build produced.
 name: CI
 
 on:
   push:
-    branches: ["**"]
-    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+    branches: [main, "release-*"]
   pull_request:
+  # cargo audit depends on the advisory database, not on the commit.
+  schedule:
+    - cron: "17 5 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  rust:
-    uses: slipmesh/.github/.github/workflows/rust.yml@v1.2
+  checks:
+    uses: slipmesh/.github/.github/workflows/rust.yml@v2
+
+  release-commit:
+    if: github.event_name == 'push'
+    uses: slipmesh/.github/.github/workflows/release-commit.yml@v2
+
+  build:
+    needs: release-commit
+    if: needs.release-commit.outputs.version != ''
+    uses: slipmesh/.github/.github/workflows/rust-build.yml@v2
     with:
       binaries: slipmesh-routeros
 
   tag:
-    needs: rust
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: slipmesh/.github/.github/workflows/tag-release.yml@v1.2
+    needs: [release-commit, build]
+    uses: slipmesh/.github/.github/workflows/tag-release.yml@v2
     permissions:
       contents: write
-
-  # Runs for a release commit tagged above, or for a tag pushed by hand.
-  release:
-    needs: [rust, tag]
-    if: ${{ !cancelled() && needs.rust.result == 'success' && (github.ref_type == 'tag' || needs.tag.outputs.tag != '') }}
-    uses: slipmesh/.github/.github/workflows/release.yml@v1.2
-    permissions:
-      contents: write
-      packages: read
     with:
-      tag: ${{ needs.tag.outputs.tag }}
+      version: ${{ needs.release-commit.outputs.version }}
+
+  release:
+    needs: [release-commit, tag]
+    uses: slipmesh/.github/.github/workflows/release.yml@v2
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.release-commit.outputs.version }}
+      latest: ${{ github.ref == 'refs/heads/main' && needs.release-commit.outputs.prerelease != 'true' }}
+      prerelease: ${{ needs.release-commit.outputs.prerelease == 'true' }}
       download-binaries: true
       prepare: |
         mkdir dist

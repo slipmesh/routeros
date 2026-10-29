@@ -26,7 +26,7 @@ jobs:
     uses: slipmesh/.github/.github/workflows/release-commit.yml@v2
 
   build:
-    needs: release-commit
+    needs: [release-commit, checks]
     if: needs.release-commit.outputs.version != ''
     uses: slipmesh/.github/.github/workflows/rust-build.yml@v2
     with:

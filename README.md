@@ -82,9 +82,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-`Cargo.toml`'s `version` and the release tag are the same number, and the release commit moves
-both: it is what an installed `slipmesh-routeros` reports for itself, and bumping only the tag
-leaves a binary that misnames its own version - which is how it read `0.1.0` at tag `v0.1.2`.
-The Release PR workflow (Actions, then Release PR) opens that commit as a PR with `CHANGELOG.md`
-regenerated. Merging it tags the release, and the same run builds and tests
-`slipmesh-routeros-linux-{amd64,arm64}` and attaches them with a `SHA256SUMS` to the GitHub Release.
+`Cargo.toml`'s `version` and the release tag are the same number, and the release commit moves both:
+it is what an installed `slipmesh-routeros` reports for itself, and bumping only the tag leaves a
+binary that misnames its own version - which is how it read `0.1.0` at tag `v0.1.2`. The Release PR
+workflow (Actions, then Release PR) opens that commit as a PR with `CHANGELOG.md` regenerated.
+Merging it releases it: that push alone builds `slipmesh-routeros-linux-{amd64,arm64}`, tags the
+commit once the build succeeds, and attaches them with a `SHA256SUMS` to the GitHub Release. Every
+other push and pull request runs only the checks, and `cargo audit` also runs weekly. The release
+build waits for every check of its own push, `cargo audit` included; an advisory with no fix yet is
+ignored in `.cargo/audit.toml`, with the reason next to it.

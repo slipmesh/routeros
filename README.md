@@ -87,5 +87,5 @@ it is what an installed `slipmesh-routeros` reports for itself, and bumping only
 binary that misnames its own version - which is how it read `0.1.0` at tag `v0.1.2`. The Release PR
 workflow (Actions, then Release PR) opens that commit as a PR with `CHANGELOG.md` regenerated.
 Merging it releases it: that push alone builds `slipmesh-routeros-linux-{amd64,arm64}`, tags the
-commit once the build succeeded, and attaches them with a `SHA256SUMS` to the GitHub Release. Every
+commit once the build succeeds, and attaches them with a `SHA256SUMS` to the GitHub Release. Every
 other push and pull request runs only the checks, and `cargo audit` also runs weekly.

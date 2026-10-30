@@ -19,22 +19,22 @@ permissions:
 
 jobs:
   checks:
-    uses: slipmesh/.github/.github/workflows/rust.yml@v2
+    uses: slipmesh/.github/.github/workflows/rust.yml@v2.1
 
   release-commit:
     if: github.event_name == 'push'
-    uses: slipmesh/.github/.github/workflows/release-commit.yml@v2
+    uses: slipmesh/.github/.github/workflows/release-commit.yml@v2.1
 
   build:
     needs: [release-commit, checks]
     if: needs.release-commit.outputs.version != ''
-    uses: slipmesh/.github/.github/workflows/rust-build.yml@v2
+    uses: slipmesh/.github/.github/workflows/rust-build.yml@v2.1
     with:
       binaries: slipmesh-routeros
 
   tag:
     needs: [release-commit, build]
-    uses: slipmesh/.github/.github/workflows/tag-release.yml@v2
+    uses: slipmesh/.github/.github/workflows/tag-release.yml@v2.1
     permissions:
       contents: write
     with:
@@ -42,12 +42,12 @@ jobs:
 
   release:
     needs: [release-commit, tag]
-    uses: slipmesh/.github/.github/workflows/release.yml@v2
+    uses: slipmesh/.github/.github/workflows/release.yml@v2.1
     permissions:
       contents: write
     with:
       tag: ${{ needs.release-commit.outputs.version }}
-      latest: ${{ github.ref == 'refs/heads/main' && needs.release-commit.outputs.prerelease != 'true' }}
+      latest: ${{ needs.release-commit.outputs.latest == 'true' }}
       prerelease: ${{ needs.release-commit.outputs.prerelease == 'true' }}
       download-binaries: true
       prepare: |

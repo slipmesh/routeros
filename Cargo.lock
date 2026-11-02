@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "routeros"
-version = "0.2.4"
+version = "1.14.5+sm.1"
 dependencies = [
  "anyhow",
  "awg",

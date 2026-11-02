@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
-## [0.2.4] - 2026-10-27
+## [1.14.5+sm.1] - 2026-11-02
+
+### Build system 🛠️
+
+- Commit Cargo.lock (#24)
+- Follow the talos-extensions release lines (#28)
+
+### CI/CD ⚙️
+
+- Take the release notes from git-cliff through slipmesh/.github@v1.2 (#21)
+- Build only the merged release PR, through the v2 shared workflows (#22)
+- Mark the newest stable release latest, through slipmesh/.github@v2.1 (#23)
+- Skip a release commit that is already tagged, through slipmesh/.github@v2.2 (#25)
+- Call the shared workflows at slipmesh/.github@v2.3 (#26)
+
+### Miscellaneous 🧹
+
+- Hand dependency updates to renovate (#27)
+
+## [0.2.4] - 2026-10-28
 
 ### CI/CD ⚙️
 

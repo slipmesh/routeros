@@ -3,10 +3,11 @@
   "extends": ["github>slipmesh/.github"],
   "packageRules": [
     {
-      "description": "awg and router come from a talos-extensions tag that names the config format this crate targets; which tag line to follow is not settled, so the tag moves by hand.",
+      "description": "awg and router come from one talos-extensions tag, vX.Y.Z+sm.N. Semver drops the build metadata, so sm.N would never move; the regex compares it as a fourth number.",
       "matchManagers": ["cargo"],
       "matchDepNames": ["awg", "router"],
-      "enabled": false
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\+sm\\.(?<build>\\d+)$",
+      "groupName": "talos-extensions"
     }
   ]
 }

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>slipmesh/.github"],
+  "packageRules": [
+    {
+      "description": "awg and router come from a talos-extensions tag that names the config format this crate targets; which tag line to follow is not settled, so the tag moves by hand.",
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["awg", "router"],
+      "enabled": false
+    }
+  ]
+}

@@ -28,7 +28,7 @@ while upstream ships patches for it.
 ## Cutting a release
 
 1. Run Actions, then Release PR, on the release branch with the version, such as `v1.14.5+sm.1`.
-   Without one it computes a semver bump, which names no Talos patch.
+   It is required: a bump computed from the commits would move the Talos patch, not the revision.
 2. The pull request it opens moves `Cargo.toml`'s `version` to the same number without the `v` and
    regenerates `CHANGELOG.md`. The push of the merge runs the checks again, so it does not wait on
    this pull request's. Merge it.

@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release; empty computes it from the commits since the last tag.
-        required: false
+        description: Version to release, vX.Y.Z+sm.N with X.Y.Z the current Talos patch of the branch's line.
+        required: true
 
 permissions:
   contents: read

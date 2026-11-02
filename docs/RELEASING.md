@@ -11,15 +11,15 @@ at 1 for every Talos patch and counts releases against it. Releases up to `v0.2.
 semver from `main`.
 
 Each branch takes `awg` and `router` from a talos-extensions release of its own line, by tag in
-`Cargo.toml`. On `main`, Renovate moves that tag within the line, to a later Talos patch or `+sm.N`,
-together with `Cargo.lock`, and never to another line. A release branch, and `main` once it follows
-the next line, moves the tag by hand (`cargo update -p awg -p router`), as a pull request like any
-other.
+`Cargo.toml`. Renovate moves that tag within the branch's line, to a later Talos patch or `+sm.N`,
+together with `Cargo.lock`, and never to another line: `main` moves to the next line by hand
+(`cargo update -p awg -p router`), as a pull request like any other.
 
 Stable releases come only from `release-1.X` branches, one per Talos minor; `main` follows the next
 minor. A change that breaks how a `slipmesh.yaml` is applied to a device lands only on `main`, with
 the next minor. Any other change lands on `main` first and is cherry-picked to the release branches
-it applies to (`git cherry-pick -x`, then a pull request into `release-1.X`). A line is supported
+it applies to (`git cherry-pick -x`, then a pull request into `release-1.X`). Renovate's patch
+updates are the exception: it opens them against each branch on its own. A line is supported
 while upstream ships patches for it.
 
 | Talos line | branch | status |

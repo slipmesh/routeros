@@ -81,8 +81,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "awg"
-version = "0.4.0"
-source = "git+https://github.com/slipmesh/talos-extensions?tag=v0.4.0#399d3a7aa00b86148d7e8d41e80357002c2137a1"
+version = "1.14.5+sm.1"
+source = "git+https://github.com/slipmesh/talos-extensions?tag=v1.14.5%2Bsm.1#e2ed2b7dc7fc1754a2a9b99ef337269c87ba6fa3"
 dependencies = [
  "anyhow",
  "base64",
@@ -249,8 +249,8 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.4.0"
-source = "git+https://github.com/slipmesh/talos-extensions?tag=v0.4.0#399d3a7aa00b86148d7e8d41e80357002c2137a1"
+version = "1.14.5+sm.1"
+source = "git+https://github.com/slipmesh/talos-extensions?tag=v1.14.5%2Bsm.1#e2ed2b7dc7fc1754a2a9b99ef337269c87ba6fa3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1189,8 +1189,8 @@ dependencies = [
 
 [[package]]
 name = "router"
-version = "0.4.0"
-source = "git+https://github.com/slipmesh/talos-extensions?tag=v0.4.0#399d3a7aa00b86148d7e8d41e80357002c2137a1"
+version = "1.14.5+sm.1"
+source = "git+https://github.com/slipmesh/talos-extensions?tag=v1.14.5%2Bsm.1#e2ed2b7dc7fc1754a2a9b99ef337269c87ba6fa3"
 dependencies = [
  "anyhow",
  "common",

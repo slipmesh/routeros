@@ -1,11 +1,35 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>slipmesh/.github"],
+  "extends": [
+    "github>slipmesh/.github"
+  ],
   "packageRules": [
     {
-      "description": "awg and router come from a talos-extensions tag that names the config format this crate targets; which tag line to follow is not settled, so the tag moves by hand.",
-      "matchManagers": ["cargo"],
-      "matchDepNames": ["awg", "router"],
+      "description": "awg and router come from one talos-extensions tag, vX.Y.Z+sm.N. Semver drops the build metadata, so sm.N would never move; the regex compares it as a fourth number. Patches get a bucket of their own, or a newer line would take the bucket and the rule below would leave no update.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchDepNames": [
+        "awg",
+        "router"
+      ],
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\+sm\\.(?<build>\\d+)$",
+      "groupName": "talos-extensions",
+      "separateMinorPatch": true
+    },
+    {
+      "description": "X.Y is the Talos line: a branch moves to another line by hand, never through an update.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchDepNames": [
+        "awg",
+        "router"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
       "enabled": false
     }
   ]

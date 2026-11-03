@@ -46,10 +46,7 @@ Every other pull request and push runs the checks and builds nothing.
 ## Branching a new line
 
 Before the first release for a new Talos minor, branch `release-1.X` from `main` and add it to the
-table above.
-
-Before the first release from `main` after that, tag the branch point as the next minor's `alpha.0`,
-for `release-1.15`:
+table above. Then tag the branch point on `main` as the next minor's `alpha.0`, for `release-1.15`:
 
 ```sh
 git tag -a v1.16.0-alpha.0 -m v1.16.0-alpha.0 <branch point>
@@ -57,8 +54,8 @@ git push origin v1.16.0-alpha.0
 ```
 
 The `release-1.X` tags are not reachable from `main`, so without it git-cliff would list everything
-that line released again in `main`'s next section. Until `main` releases, nothing reads it. The tag
-releases nothing: CI runs on branch pushes, not tags.
+that line releases again in `main`'s next section. The tag releases nothing: CI runs on branch
+pushes, not tags.
 
 ## Withdrawing a broken release
 

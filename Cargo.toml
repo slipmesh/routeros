@@ -17,8 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # This tool has to agree with the daemons field for field, so it uses their own config types. The
 # tag names the talos-extensions release whose config format it targets.
-awg = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.1", default-features = false }
-router = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.1", default-features = false }
+awg = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.2", default-features = false }
+router = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.2", default-features = false }
 
 base64 = "0.23.1"
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }

@@ -23,7 +23,7 @@ awg = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.
 router = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.2", default-features = false }
 
 # Ours, from a release tag: sliplib is not published to crates.io.
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.2.0" }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.3.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

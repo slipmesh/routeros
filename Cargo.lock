@@ -1502,8 +1502,8 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.2.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.2.0#3ceabfac49b55f586623343c8a63e4bc7ad76f10"
+version = "0.3.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.3.0#d45e26fe0bf7344c3501a79740708095c29f1bc8"
 dependencies = [
  "base64",
  "curve25519-dalek",

@@ -1,11 +1,11 @@
 //! Fixtures shared by every module's tests. Key material is generated here and nowhere else: a
 //! key pasted into a test from a live config is published with the repository.
 
-use base64::Engine as _;
+use sliplib_secrets::wireguard::encode_key;
 
 /// Base64 of 32 bytes - the wire form of a WireGuard key.
 pub fn encode_wg_key(bytes: [u8; 32]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    encode_key(&bytes)
 }
 
 /// A WireGuard-shaped key made of `label` repeated to 32 bytes: distinct per label, the same on

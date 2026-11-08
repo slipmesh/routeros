@@ -12,6 +12,7 @@
 //! into this module - `diff` itself has no way to tell the difference and must never be handed an
 //! unfiltered shared table.
 
+use sliplib_secrets::wireguard::PrivateKey;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -136,35 +137,6 @@ pub fn is_raw_orphan_id(interface: &str) -> bool {
 
 // ── interface wireguard (exclusive) ──
 
-/// A base64 WireGuard private key whose `Debug` hides it, since `--diff` prints plans through
-/// `Debug`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct PrivateKey(String);
-
-impl PrivateKey {
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for PrivateKey {
-    fn from(b64: String) -> Self {
-        Self(b64)
-    }
-}
-
-impl From<&str> for PrivateKey {
-    fn from(b64: &str) -> Self {
-        Self(b64.to_string())
-    }
-}
-
-impl std::fmt::Debug for PrivateKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredWireguardInterface {
     pub name: String,
@@ -188,32 +160,6 @@ impl HasId for CurrentWireguardInterface {
     }
 }
 
-/// WireGuard clamps a Curve25519 private key the moment it loads one - byte 0 `&= 248`, byte 31
-/// `&= 127` then `|= 64` - and RouterOS hands back the clamped form on read. `slipmesh-taloscfg
-/// generate` emits the key as generated, unclamped, so comparing the two byte-for-byte never matches: the
-/// diff recomputes the same "update" on every run and each apply rewrites a live WireGuard
-/// interface for nothing. That is not cosmetic - rewriting an interface with an established peer
-/// and an OSPF adjacency on it is the single most disruptive operation this tool performs.
-///
-/// Clamping both sides compares the keys by identity rather than by representation. The two are
-/// cryptographically the same key (X25519 clamps the scalar before use either way, so the public
-/// key is identical), and clamping an already-clamped key is a no-op. Anything that isn't a
-/// 32-byte key is returned untouched - better a spurious update than silently mangling a value
-/// this function doesn't understand.
-fn clamp_wg_key(b64: &str) -> String {
-    use base64::Engine as _;
-    let engine = base64::engine::general_purpose::STANDARD;
-    match engine.decode(b64) {
-        Ok(mut key) if key.len() == 32 => {
-            key[0] &= 248;
-            key[31] &= 127;
-            key[31] |= 64;
-            engine.encode(key)
-        }
-        _ => b64.to_string(),
-    }
-}
-
 pub fn wireguard_interfaces(
     current: &[CurrentWireguardInterface],
     desired: &[DesiredWireguardInterface],
@@ -225,58 +171,12 @@ pub fn wireguard_interfaces(
         |d| d.name.clone(),
         |c| c.id.clone(),
         |c, d| {
-            c.listen_port == d.listen_port
-                && clamp_wg_key(c.private_key_b64.expose())
-                    == clamp_wg_key(d.private_key_b64.expose())
-                && c.disabled == d.disabled
+            // RouterOS hands a key back clamped and taloscfg writes it unclamped: compared as text,
+            // every run would rewrite a live interface, peers and OSPF adjacency with it.
+            (c.listen_port, c.disabled, &c.private_key_b64)
+                == (d.listen_port, d.disabled, &d.private_key_b64)
         },
     )
-}
-
-#[cfg(test)]
-mod wg_key_tests {
-    use super::*;
-    use crate::test_support::encode_wg_key;
-
-    /// Every bit set: clamping clears the low three bits of byte 0 and the top bit of byte 31.
-    fn all_ones() -> (String, String) {
-        let mut stored = [0xFF; 32];
-        stored[0] = 0xF8;
-        stored[31] = 0x7F;
-        (encode_wg_key([0xFF; 32]), encode_wg_key(stored))
-    }
-
-    /// No bit set: clamping sets bit 6 of byte 31.
-    fn all_zeros() -> (String, String) {
-        let mut stored = [0x00; 32];
-        stored[31] = 0x40;
-        (encode_wg_key([0x00; 32]), encode_wg_key(stored))
-    }
-
-    #[test]
-    fn clamping_makes_a_generated_key_match_what_routeros_stores() {
-        for (generated, as_stored) in [all_ones(), all_zeros()] {
-            assert_ne!(
-                generated, as_stored,
-                "the two differ verbatim - that is the bug"
-            );
-            assert_eq!(clamp_wg_key(&generated), as_stored);
-        }
-    }
-
-    #[test]
-    fn clamping_an_already_clamped_key_is_a_no_op() {
-        for (_, as_stored) in [all_ones(), all_zeros()] {
-            assert_eq!(clamp_wg_key(&as_stored), as_stored);
-        }
-    }
-
-    #[test]
-    fn a_value_that_is_not_a_32_byte_key_is_left_alone() {
-        for odd in ["", "not base64!", "AAAA"] {
-            assert_eq!(clamp_wg_key(odd), odd);
-        }
-    }
 }
 
 // ── interface wireguard peers (exclusive) ──
@@ -822,7 +722,7 @@ mod passive_flag_tests {
 #[cfg(test)]
 mod wireguard_interfaces_tests {
     use super::*;
-    use crate::test_support::wg_key;
+    use crate::test_support::{encode_wg_key, wg_key};
 
     fn desired(name: &str, port: u16) -> DesiredWireguardInterface {
         DesiredWireguardInterface {
@@ -880,6 +780,39 @@ mod wireguard_interfaces_tests {
         assert_eq!(plan.remove, vec!["*1".to_string()]);
         assert!(plan.add.is_empty());
         assert!(plan.update.is_empty());
+    }
+
+    /// Every bit set, and no bit set: the key as generated, and as RouterOS stores it once clamped.
+    fn generated_and_stored() -> [(String, String); 2] {
+        let mut ones = [0xFF; 32];
+        ones[0] = 0xF8;
+        ones[31] = 0x7F;
+        let mut zeros = [0x00; 32];
+        zeros[31] = 0x40;
+        [
+            (encode_wg_key([0xFF; 32]), encode_wg_key(ones)),
+            (encode_wg_key([0x00; 32]), encode_wg_key(zeros)),
+        ]
+    }
+
+    #[test]
+    fn noop_when_the_device_holds_the_key_clamped() {
+        for (generated, stored) in generated_and_stored() {
+            let mut d = desired("mesh-fra", 51820);
+            d.private_key_b64 = generated.into();
+            let mut c = current("*1", "mesh-fra", 51820);
+            c.private_key_b64 = stored.into();
+            assert!(wireguard_interfaces(&[c], &[d]).is_empty());
+        }
+    }
+
+    #[test]
+    fn update_when_the_key_changes() {
+        let mut d = desired("mesh-fra", 51820);
+        d.private_key_b64 = wg_key("new").into();
+        let plan = wireguard_interfaces(&[current("*1", "mesh-fra", 51820)], &[d.clone()]);
+        assert_eq!(plan.update.len(), 1);
+        assert_eq!(plan.update[0].1, d);
     }
 
     #[test]

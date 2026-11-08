@@ -74,12 +74,20 @@ AGPL-3.0-only - see [`LICENSE`](./LICENSE). This follows from depending on
 [`mikrotik-rs`](https://github.com/ferrohd/mikrotik-rs), whose entire workspace is AGPL-3.0-only.
 It is the only repository in this organization that isn't MIT/Apache-2.0.
 
+Each release carries the licenses and notices of what is linked into the binary:
+`THIRD-PARTY-NOTICES` for the crates, rendered by [cargo-about](https://embarkstudios.github.io/cargo-about/)
+from [`about.toml`](about.toml) and [`about.hbs`](about.hbs), and `COPYRIGHT-rust-std.html` and
+`COPYRIGHT-musl` for the Rust standard library and the musl libc. The `licenses` check holds every
+dependency to the licenses and sources [`deny.toml`](deny.toml) allows, and renders the notices on
+every pull request.
+
 ## Development
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+cargo deny --locked check licenses bans sources
 ```
 
 `Cargo.toml`'s `version` and the release tag are the same number, and the release commit moves both:

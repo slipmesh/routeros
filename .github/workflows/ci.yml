@@ -19,22 +19,22 @@ permissions:
 
 jobs:
   checks:
-    uses: slipmesh/.github/.github/workflows/rust.yml@v2.4
+    uses: slipmesh/.github/.github/workflows/rust.yml@v3.1.0
 
   release-commit:
     if: github.event_name == 'push'
-    uses: slipmesh/.github/.github/workflows/release-commit.yml@v2.4
+    uses: slipmesh/.github/.github/workflows/release-commit.yml@v3.1.0
 
   build:
     needs: [release-commit, checks]
     if: needs.release-commit.outputs.version != ''
-    uses: slipmesh/.github/.github/workflows/rust-build.yml@v2.4
+    uses: slipmesh/.github/.github/workflows/rust-build.yml@v3.1.0
     with:
       binaries: slipmesh-routeros
 
   tag:
     needs: [release-commit, build]
-    uses: slipmesh/.github/.github/workflows/tag-release.yml@v2.4
+    uses: slipmesh/.github/.github/workflows/tag-release.yml@v3.1.0
     permissions:
       contents: write
     with:
@@ -42,7 +42,7 @@ jobs:
 
   release:
     needs: [release-commit, tag]
-    uses: slipmesh/.github/.github/workflows/release.yml@v2.4
+    uses: slipmesh/.github/.github/workflows/release.yml@v3.1.0
     permissions:
       contents: write
     with:

@@ -698,6 +698,26 @@ mod tests {
     }
 
     #[test]
+    fn a_learn_range_selects_only_prefixes_inside_it() {
+        let mut router = router_config();
+        router.learn = vec!["10.99.0.5/16".to_string(), "10.98.0.0/24".to_string()];
+        let physically_connected = vec![
+            ("cni0".to_string(), "10.99.255.0/24".to_string()),
+            ("cni1".to_string(), "10.100.0.0/24".to_string()),
+            ("cni2".to_string(), "10.98.0.0/16".to_string()),
+            ("cni3".to_string(), "not a prefix".to_string()),
+        ];
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
+        let announced_prefixes: Vec<&str> = state
+            .bgp_networks
+            .iter()
+            .map(|n| n.address.as_str())
+            .filter(|address| address.contains('/'))
+            .collect();
+        assert_eq!(announced_prefixes, ["10.99.255.0/24"]);
+    }
+
+    #[test]
     fn announce_entries_are_always_included_regardless_of_live_state() {
         let mut router = router_config();
         router.announce.push(router::config::AnnounceEntry {

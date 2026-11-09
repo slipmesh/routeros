@@ -1248,6 +1248,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "serde",
+ "sliplib-net",
  "sliplib-runtime",
  "sliplib-secrets",
  "tokio",
@@ -1501,17 +1502,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "sliplib-net"
+version = "0.6.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
+dependencies = [
+ "ipnet",
+]
+
+[[package]]
 name = "sliplib-runtime"
-version = "0.5.1"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.5.1#04d0ea14ee991a53e16f90c3eded9bf195e801ed"
+version = "0.6.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.5.1"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.5.1#04d0ea14ee991a53e16f90c3eded9bf195e801ed"
+version = "0.6.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
 dependencies = [
  "base64",
  "curve25519-dalek",

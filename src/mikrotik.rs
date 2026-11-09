@@ -481,9 +481,7 @@ pub async fn read_physically_connected_prefixes(
 /// to its containing network base (`"192.168.88.0/24"`) - `ip address` rows carry the host
 /// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<String> {
-    let (addr, prefix_len) = crate::cidr::parse_cidr(address)?;
-    let network = crate::cidr::network_addr(addr, prefix_len);
-    Ok(format!("{network}/{prefix_len}"))
+    Ok(sliplib_net::parse_ipv4(address)?.trunc().to_string())
 }
 
 // ── interface list member ──

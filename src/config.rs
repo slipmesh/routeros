@@ -5,7 +5,6 @@
 //! instead of the kernel/a BIRD config file. Touches neither `patch::read_patch_file` nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
-use crate::cidr;
 use crate::diff::{
     DesiredAddressListEntry, DesiredBfdConfiguration, DesiredBgpConnection, DesiredBgpInstance,
     DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea,
@@ -287,7 +286,7 @@ pub fn desired_state(
             .iter()
             .any(|pattern| glob_match(pattern, iface));
         let learned = router.learn.iter().any(|range| {
-            cidr::cidr_contains(range, prefix).unwrap_or_else(|e| {
+            learn_range_contains(range, prefix).unwrap_or_else(|e| {
                 tracing::warn!(range = %range, prefix = %prefix, error = %e, "skipping unparsable learn range/prefix");
                 false
             })
@@ -373,6 +372,10 @@ pub fn desired_state(
         },
         bgp_connections,
     })
+}
+
+fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
+    Ok(sliplib_net::parse_ipv4(range)?.contains(&sliplib_net::parse_ipv4(prefix)?))
 }
 
 #[cfg(test)]

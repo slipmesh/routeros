@@ -1,4 +1,3 @@
-mod cidr;
 mod cli;
 mod config;
 mod converge;

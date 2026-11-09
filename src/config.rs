@@ -5,7 +5,6 @@
 //! instead of the kernel/a BIRD config file. Touches neither `patch::read_patch_file` nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
-use crate::cidr;
 use crate::diff::{
     DesiredAddressListEntry, DesiredBfdConfiguration, DesiredBgpConnection, DesiredBgpInstance,
     DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea,
@@ -287,7 +286,7 @@ pub fn desired_state(
             .iter()
             .any(|pattern| glob_match(pattern, iface));
         let learned = router.learn.iter().any(|range| {
-            cidr::cidr_contains(range, prefix).unwrap_or_else(|e| {
+            learn_range_contains(range, prefix).unwrap_or_else(|e| {
                 tracing::warn!(range = %range, prefix = %prefix, error = %e, "skipping unparsable learn range/prefix");
                 false
             })
@@ -373,6 +372,10 @@ pub fn desired_state(
         },
         bgp_connections,
     })
+}
+
+fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
+    Ok(sliplib_net::parse_ipv4(range)?.contains(&sliplib_net::parse_ipv4(prefix)?))
 }
 
 #[cfg(test)]
@@ -695,6 +698,26 @@ mod tests {
                 .iter()
                 .any(|n| n.address == "10.99.5.0/24")
         );
+    }
+
+    #[test]
+    fn a_learn_range_selects_only_prefixes_inside_it() {
+        let mut router = router_config();
+        router.learn = vec!["10.99.0.5/16".to_string(), "10.98.0.0/24".to_string()];
+        let physically_connected = vec![
+            ("cni0".to_string(), "10.99.255.0/24".to_string()),
+            ("cni1".to_string(), "10.100.0.0/24".to_string()),
+            ("cni2".to_string(), "10.98.0.0/16".to_string()),
+            ("cni3".to_string(), "not a prefix".to_string()),
+        ];
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
+        let announced_prefixes: Vec<&str> = state
+            .bgp_networks
+            .iter()
+            .map(|n| n.address.as_str())
+            .filter(|address| address.contains('/'))
+            .collect();
+        assert_eq!(announced_prefixes, ["10.99.255.0/24"]);
     }
 
     #[test]

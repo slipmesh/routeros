@@ -16,6 +16,6 @@ fn a_failed_run_exits_nonzero_and_logs_the_whole_error_chain() {
     assert!(!output.status.success(), "{:?}", output.status);
     let log = String::from_utf8(output.stdout).unwrap();
     assert!(log.contains("routeros failed"), "{log}");
-    assert!(log.contains("failed to read patch file"), "{log}");
+    assert_eq!(log.matches("failed to read patch file").count(), 1, "{log}");
     assert!(log.contains("No such file or directory"), "{log}");
 }

@@ -52,9 +52,9 @@ fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
         .with_context(|| format!("{name:?} document has no configFiles entries"))
 }
 
+/// Errors leave naming the file to the caller, which adds it as context once for all of them.
 pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("failed to read patch file {}: {e}", path.display()))?;
+    let raw = std::fs::read_to_string(path)?;
     let docs = documents(&raw)?;
 
     let awg_content = segment_content(&docs, "awg")?;

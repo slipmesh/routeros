@@ -41,11 +41,7 @@ fn use_color() -> bool {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .without_time()
-        .with_ansi(false)
-        .init();
+    sliplib_runtime::init_tracing();
 
     let args = cli::Cli::parse();
 

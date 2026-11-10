@@ -1,0 +1,3 @@
+# Applying a plan to the device is a thin shim over the RouterOS API that only a live device
+# exercises (see `src/mikrotik.rs`): no unit test can tell a call to it from none.
+exclude_re = ["src/mikrotik.rs:.*replace apply_"]

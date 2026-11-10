@@ -133,6 +133,7 @@ pub fn desired_state(
             listen_port: iface.listen_port,
             private_key_b64: iface.private_key.clone(),
             disabled: false,
+            mtu: iface.mtu,
         });
         list_members.push(DesiredListMember {
             list: LAN_LIST.to_string(),
@@ -410,6 +411,7 @@ mod tests {
             private_key: wg_key("own").into(),
             obfuscation: Default::default(),
             handshake_stale_secs: None,
+            mtu: None,
             peers: vec![],
         }
     }
@@ -478,6 +480,19 @@ mod tests {
         assert!(state.ospf_interface_templates[0].passive);
         assert_eq!(state.bgp_networks.len(), 1);
         assert_eq!(state.bgp_networks[0].address, "10.62.0.1");
+    }
+
+    #[test]
+    fn a_wireguard_interface_takes_the_mtu_its_awg_interface_has() {
+        let mut with_mtu = iface("mesh-2", 51820);
+        with_mtu.mtu = Some(1440);
+        let awg = AwgConfig {
+            interfaces: vec![with_mtu, iface("mesh-3", 51821)],
+            ..Default::default()
+        };
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
+        let mtus: Vec<_> = state.wireguard_interfaces.iter().map(|i| i.mtu).collect();
+        assert_eq!(mtus, [Some(1440), None]);
     }
 
     #[test]

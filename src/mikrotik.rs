@@ -217,6 +217,10 @@ fn parse_wireguard_interface(row: &Row) -> anyhow::Result<CurrentWireguardInterf
             .map_err(|e| anyhow::anyhow!("listen-port is not a u16: {e}"))?,
         private_key_b64: get(row, "private-key").unwrap_or_default().into(),
         disabled: get_bool_flag(row, "disabled"),
+        mtu: get(row, "mtu")
+            .map(|mtu| mtu.parse())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("mtu is not a number: {e}"))?,
         id,
     })
 }
@@ -245,30 +249,25 @@ pub async fn apply_wireguard_interfaces(
         remove(device, WIREGUARD_PATH, id).await?;
     }
     for d in &plan.add {
-        add(
-            device,
-            WIREGUARD_PATH,
-            &[
-                ("name", d.name.as_str()),
-                ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.expose()),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await?;
+        let (port, mtu) = (d.listen_port.to_string(), d.mtu.map(|m| m.to_string()));
+        let mut attributes = vec![
+            ("name", d.name.as_str()),
+            ("listen-port", port.as_str()),
+            ("private-key", d.private_key_b64.expose()),
+            ("disabled", if d.disabled { "yes" } else { "no" }),
+        ];
+        attributes.extend(mtu.as_deref().map(|mtu| ("mtu", mtu)));
+        add(device, WIREGUARD_PATH, &attributes).await?;
     }
     for (id, d) in &plan.update {
-        set(
-            device,
-            WIREGUARD_PATH,
-            id,
-            &[
-                ("listen-port", &d.listen_port.to_string()),
-                ("private-key", d.private_key_b64.expose()),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await?;
+        let (port, mtu) = (d.listen_port.to_string(), d.mtu.map(|m| m.to_string()));
+        let mut attributes = vec![
+            ("listen-port", port.as_str()),
+            ("private-key", d.private_key_b64.expose()),
+            ("disabled", if d.disabled { "yes" } else { "no" }),
+        ];
+        attributes.extend(mtu.as_deref().map(|mtu| ("mtu", mtu)));
+        set(device, WIREGUARD_PATH, id, &attributes).await?;
     }
     Ok(())
 }
@@ -1239,6 +1238,18 @@ mod tests {
         assert_eq!(iface.name, "mesh-fra");
         assert_eq!(iface.listen_port, 51820);
         assert!(!iface.disabled);
+        assert_eq!(iface.mtu, None);
+    }
+
+    #[test]
+    fn a_wireguard_interface_reads_its_mtu() {
+        let r = row(&[
+            (".id", "*1"),
+            ("name", "mesh-fra"),
+            ("listen-port", "51820"),
+            ("mtu", "1420"),
+        ]);
+        assert_eq!(parse_wireguard_interface(&r).unwrap().mtu, Some(1420));
     }
 
     #[test]

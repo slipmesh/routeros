@@ -301,7 +301,7 @@ pub fn desired_state(
     }
     bgp_network_addrs.insert(format!("{own_loopback}/32"));
     // RouterOS's `ip firewall address-list` echoes a host-only entry back without its `/32`
-    // suffix (a written "10.0.0.255/32" reads back as "10.0.0.255") - strip it
+    // suffix (a written "198.51.100.1/32" reads back as "198.51.100.1") - strip it
     // here so a /32 entry compares like with like instead of the diff perpetually
     // re-adding/removing the exact same entry.
     let bgp_networks = bgp_network_addrs
@@ -389,7 +389,7 @@ mod tests {
     fn router_config() -> RouterConfig {
         RouterConfig {
             node: NodeIdentity {
-                loopback_addresses: vec!["10.62.0.1/32".to_string(), "fd00::1/128".to_string()],
+                loopback_addresses: vec!["198.51.100.1/32".to_string(), "3fff::1/128".to_string()],
             },
             bgp_as: 65062,
             bgp_peers: vec![],
@@ -467,19 +467,22 @@ mod tests {
     fn always_includes_the_loopback_addresses_and_singletons() {
         let state = desired_state(&AwgConfig::default(), &router_config(), &[]).unwrap();
         assert_eq!(state.ip_addresses.len(), 1);
-        assert_eq!(state.ip_addresses[0].address, "10.62.0.1/32");
+        assert_eq!(state.ip_addresses[0].address, "198.51.100.1/32");
         assert_eq!(state.ip_addresses[0].interface, LOOPBACK_BRIDGE);
         assert_eq!(state.ip_v6_addresses.len(), 1);
-        assert_eq!(state.ip_v6_addresses[0].address, "fd00::1/128");
+        assert_eq!(state.ip_v6_addresses[0].address, "3fff::1/128");
         assert!(!state.ip_v6_addresses[0].advertise);
         assert_eq!(state.loopback_bridge.name, LOOPBACK_BRIDGE);
         assert_eq!(state.ospf_instance.version, 3);
-        assert_eq!(state.ospf_instance.router_id, Ipv4Addr::new(10, 62, 0, 1));
+        assert_eq!(
+            state.ospf_instance.router_id,
+            Ipv4Addr::new(198, 51, 100, 1)
+        );
         assert_eq!(state.bgp_instance.as_number, 65062);
         assert_eq!(state.ospf_interface_templates.len(), 1);
         assert!(state.ospf_interface_templates[0].passive);
         assert_eq!(state.bgp_networks.len(), 1);
-        assert_eq!(state.bgp_networks[0].address, "10.62.0.1");
+        assert_eq!(state.bgp_networks[0].address, "198.51.100.1");
     }
 
     #[test]
@@ -498,7 +501,8 @@ mod tests {
     #[test]
     fn wireguard_interface_and_peer_with_an_endpoint() {
         let mut i = iface("mesh-2", 51820);
-        i.peers.push(peer("fra-pub", Some("fra.example.com:51820")));
+        i.peers
+            .push(peer("east-pub", Some("east.example.com:51820")));
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
@@ -517,9 +521,9 @@ mod tests {
 
         assert_eq!(state.wireguard_peers.len(), 1);
         let p = &state.wireguard_peers[0];
-        assert_eq!(p.public_key_b64, wg_key("fra-pub"));
+        assert_eq!(p.public_key_b64, wg_key("east-pub"));
         assert_eq!(p.name, "2");
-        assert_eq!(p.endpoint_address, Some("fra.example.com".to_string()));
+        assert_eq!(p.endpoint_address, Some("east.example.com".to_string()));
         assert_eq!(p.endpoint_port, Some(51820));
         assert_eq!(p.persistent_keepalive, Some(25));
         assert_eq!(p.allowed_address, "0.0.0.0/0,::/0");
@@ -542,9 +546,9 @@ mod tests {
     #[test]
     fn mesh_interface_addresses_are_applied_verbatim_from_the_patch_file() {
         let mut i1 = iface("mesh-2", 51820);
-        i1.addresses = vec!["fe80::a3e:ff/64".to_string()];
+        i1.addresses = vec!["fe80::c612:ff/64".to_string()];
         let mut i2 = iface("mesh-3", 51821);
-        i2.addresses = vec!["fe80::a3e:ff/64".to_string()]; // same literal, different interface
+        i2.addresses = vec!["fe80::c612:ff/64".to_string()]; // same literal, different interface
         let awg = AwgConfig {
             interfaces: vec![i1, i2],
             ..Default::default()
@@ -560,19 +564,17 @@ mod tests {
             state
                 .ip_v6_addresses
                 .iter()
-                .any(|a| a.interface == LOOPBACK_BRIDGE && a.address == "fe80::a3e:ff/64")
+                .any(|a| a.interface == LOOPBACK_BRIDGE && a.address == "fe80::c612:ff/64")
         );
         assert!(
-            state
-                .ip_v6_addresses
-                .iter()
-                .any(|a| a.interface == "mesh-2" && a.address == "fe80::a3e:ff/64" && !a.advertise)
+            state.ip_v6_addresses.iter().any(|a| a.interface == "mesh-2"
+                && a.address == "fe80::c612:ff/64"
+                && !a.advertise)
         );
         assert!(
-            state
-                .ip_v6_addresses
-                .iter()
-                .any(|a| a.interface == "mesh-3" && a.address == "fe80::a3e:ff/64" && !a.advertise)
+            state.ip_v6_addresses.iter().any(|a| a.interface == "mesh-3"
+                && a.address == "fe80::c612:ff/64"
+                && !a.advertise)
         );
     }
 
@@ -583,7 +585,7 @@ mod tests {
     #[test]
     fn link_locals_replace_the_generated_one_and_the_ula_leaves_the_flag_unset() {
         let mut i = iface("mesh-2", 51820);
-        i.addresses = vec!["fe80::a3e:ff/64".to_string()];
+        i.addresses = vec!["fe80::c612:ff/64".to_string()];
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
@@ -617,7 +619,10 @@ mod tests {
         // interface can carry a v4 entry alongside its link-local(s) - the fix for NAT/MASQUERADE
         // otherwise having no valid source address when service_subnet traffic egresses via one.
         let mut i = iface("mesh-2", 51820);
-        i.addresses = vec!["fe80::a3e:ff/64".to_string(), "10.62.1.255/32".to_string()];
+        i.addresses = vec![
+            "fe80::c612:ff/64".to_string(),
+            "198.51.100.255/32".to_string(),
+        ];
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
@@ -630,7 +635,7 @@ mod tests {
             state
                 .ip_addresses
                 .iter()
-                .any(|a| a.interface == "mesh-2" && a.address == "10.62.1.255/32")
+                .any(|a| a.interface == "mesh-2" && a.address == "198.51.100.255/32")
         );
         // The v6 entry still goes to ip_v6_addresses, not ip_addresses - loopback /128, the
         // loopback bridge's copy of the link-local, and the mesh interface's own.
@@ -640,7 +645,7 @@ mod tests {
     #[test]
     fn nat_peer_with_no_endpoint_gets_no_endpoint_or_keepalive() {
         let mut i = iface("mesh-3", 51821);
-        i.peers.push(peer("lon-pub", None));
+        i.peers.push(peer("west-pub", None));
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
@@ -657,20 +662,20 @@ mod tests {
     fn explicit_allowed_ips_are_joined_verbatim() {
         let mut i = iface("mesh-9", 51900);
         let mut p = peer("rw-pub", None);
-        p.allowed_ips = Some(vec!["10.99.0.5/32".to_string()]);
+        p.allowed_ips = Some(vec!["203.0.113.165/32".to_string()]);
         i.peers.push(p);
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
         };
         let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        assert_eq!(state.wireguard_peers[0].allowed_address, "10.99.0.5/32");
+        assert_eq!(state.wireguard_peers[0].allowed_address, "203.0.113.165/32");
     }
 
     #[test]
     fn malformed_endpoint_is_an_error() {
         let mut i = iface("mesh-2", 51820);
-        i.peers.push(peer("fra-pub", Some("no-port-here")));
+        i.peers.push(peer("east-pub", Some("no-port-here")));
         let awg = AwgConfig {
             interfaces: vec![i],
             ..Default::default()
@@ -683,46 +688,46 @@ mod tests {
         let mut router = router_config();
         router.direct_interfaces = vec!["ether*".to_string()];
         let physically_connected = vec![
-            ("ether1".to_string(), "192.168.88.0/24".to_string()),
-            ("wan0".to_string(), "203.0.113.0/24".to_string()),
+            ("ether1".to_string(), "203.0.113.0/27".to_string()),
+            ("wan0".to_string(), "192.0.2.0/24".to_string()),
         ];
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
                 .bgp_networks
                 .iter()
-                .any(|n| n.address == "192.168.88.0/24")
+                .any(|n| n.address == "203.0.113.0/27")
         );
         assert!(
             !state
                 .bgp_networks
                 .iter()
-                .any(|n| n.address == "203.0.113.0/24")
+                .any(|n| n.address == "192.0.2.0/24")
         );
     }
 
     #[test]
     fn learn_range_selects_a_physically_connected_prefix_not_matched_by_direct_interfaces() {
         let mut router = router_config();
-        router.learn = vec!["10.99.0.0/16".to_string()];
-        let physically_connected = vec![("cni0".to_string(), "10.99.5.0/24".to_string())];
+        router.learn = vec!["203.0.113.0/25".to_string()];
+        let physically_connected = vec![("cni0".to_string(), "203.0.113.32/27".to_string())];
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
                 .bgp_networks
                 .iter()
-                .any(|n| n.address == "10.99.5.0/24")
+                .any(|n| n.address == "203.0.113.32/27")
         );
     }
 
     #[test]
     fn a_learn_range_selects_only_prefixes_inside_it() {
         let mut router = router_config();
-        router.learn = vec!["10.99.0.5/16".to_string(), "10.98.0.0/24".to_string()];
+        router.learn = vec!["203.0.113.5/26".to_string(), "203.0.113.96/28".to_string()];
         let physically_connected = vec![
-            ("cni0".to_string(), "10.99.255.0/24".to_string()),
-            ("cni1".to_string(), "10.100.0.0/24".to_string()),
-            ("cni2".to_string(), "10.98.0.0/16".to_string()),
+            ("cni0".to_string(), "203.0.113.32/27".to_string()),
+            ("cni1".to_string(), "203.0.113.64/27".to_string()),
+            ("cni2".to_string(), "203.0.113.96/27".to_string()),
             ("cni3".to_string(), "not a prefix".to_string()),
         ];
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
@@ -732,14 +737,14 @@ mod tests {
             .map(|n| n.address.as_str())
             .filter(|address| address.contains('/'))
             .collect();
-        assert_eq!(announced_prefixes, ["10.99.255.0/24"]);
+        assert_eq!(announced_prefixes, ["203.0.113.32/27"]);
     }
 
     #[test]
     fn announce_entries_are_always_included_regardless_of_live_state() {
         let mut router = router_config();
         router.announce.push(sliplib_config::router::AnnounceEntry {
-            net: "172.16.0.0/24".to_string(),
+            net: "203.0.113.192/26".to_string(),
             label: None,
         });
         let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
@@ -747,7 +752,7 @@ mod tests {
             state
                 .bgp_networks
                 .iter()
-                .any(|n| n.address == "172.16.0.0/24")
+                .any(|n| n.address == "203.0.113.192/26")
         );
     }
 
@@ -755,11 +760,11 @@ mod tests {
     fn unmatched_physically_connected_prefixes_are_not_announced() {
         let mut router = router_config();
         router.direct_interfaces = vec!["ether*".to_string()];
-        let physically_connected = vec![("wan0".to_string(), "203.0.113.0/24".to_string())];
+        let physically_connected = vec![("wan0".to_string(), "192.0.2.0/24".to_string())];
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         // Only own loopback is announced - the WAN prefix matches nothing.
         assert_eq!(state.bgp_networks.len(), 1);
-        assert_eq!(state.bgp_networks[0].address, "10.62.0.1");
+        assert_eq!(state.bgp_networks[0].address, "198.51.100.1");
     }
 
     #[test]
@@ -768,24 +773,24 @@ mod tests {
         router.bgp_peers = vec![
             BgpPeerEntry {
                 name: "node-h".to_string(),
-                address: "fd00::2".to_string(),
+                address: "3fff::2".to_string(),
             },
             BgpPeerEntry {
                 name: "node-d".to_string(),
-                address: "fd00::3".to_string(),
+                address: "3fff::3".to_string(),
             },
         ];
         let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
         assert_eq!(state.bgp_connections.len(), 2);
-        let fra = state
+        let east = state
             .bgp_connections
             .iter()
             .find(|c| c.name == "bgp-node-h")
             .unwrap();
-        assert_eq!(fra.remote_address, "fd00::2".parse::<Ipv6Addr>().unwrap());
-        assert_eq!(fra.local_address, "fd00::1".parse::<Ipv6Addr>().unwrap());
-        assert!(fra.multihop);
-        assert_eq!(fra.afi, "ip");
+        assert_eq!(east.remote_address, "3fff::2".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(east.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
+        assert!(east.multihop);
+        assert_eq!(east.afi, "ip");
     }
 
     #[test]

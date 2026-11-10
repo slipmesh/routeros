@@ -67,7 +67,7 @@ mod tests {
     use super::*;
 
     const AWG_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: awg\nconfigFiles:\n  - mountPath: /etc/talos-extensions/awg.yaml\n    content: |\n      interfaces: []\n";
-    const ROUTER_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: router\nconfigFiles:\n  - mountPath: /etc/talos-extensions/router.yaml\n    content: |\n      node:\n        loopback_addresses: [\"10.0.0.1/32\", \"fd00::1/128\"]\n      bgp_as: 64512\n      ospf_interfaces: []\n      direct_interfaces: []\n      learn: []\n      announce: []\n";
+    const ROUTER_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: router\nconfigFiles:\n  - mountPath: /etc/talos-extensions/router.yaml\n    content: |\n      node:\n        loopback_addresses: [\"198.51.100.1/32\", \"3fff::1/128\"]\n      bgp_as: 64512\n      ospf_interfaces: []\n      direct_interfaces: []\n      learn: []\n      announce: []\n";
     const MIKROTIK_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: mikrotik\nconfigFiles:\n  - mountPath: /etc/talos-extensions/mikrotik.yaml\n    content: |\n      host: router1.example.com\n      port: 8729\n      username: ansible\n      password: hunter2\n";
     const FOREIGN_DOC: &str = "machine:\n  install:\n    disk: /dev/vda\n";
 

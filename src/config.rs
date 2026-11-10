@@ -12,8 +12,8 @@ use crate::diff::{
     DesiredWireguardPeer,
 };
 use crate::sanitize::validate_endpoint;
-use awg::config::AwgConfig;
-use router::config::RouterConfig;
+use sliplib_config::awg::AwgConfig;
+use sliplib_config::router::RouterConfig;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -54,7 +54,7 @@ pub struct DesiredState {
 }
 
 /// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (enforced by
-/// `router::config::validate`, already run in `patch::read_patch_file`) - pulls both out by family.
+/// `sliplib_config::router::validate`, already run in `patch::read_patch_file`) - pulls both out by family.
 /// Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
 ///
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
@@ -79,7 +79,7 @@ fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> 
     let mut v4 = None;
     let mut v6 = None;
     for addr in &router.node.loopback_addresses {
-        let (ip, _prefix) = router::config::parse_loopback_address(addr)
+        let (ip, _prefix) = sliplib_config::router::parse_loopback_address(addr)
             .map_err(|e| anyhow::anyhow!("invalid loopback_addresses entry {addr:?}: {e}"))?;
         match ip {
             IpAddr::V4(a) => v4 = Some(a),
@@ -131,7 +131,7 @@ pub fn desired_state(
         wireguard_interfaces.push(DesiredWireguardInterface {
             name: iface.name.clone(),
             listen_port: iface.listen_port,
-            private_key_b64: iface.private_key.clone().into(),
+            private_key_b64: iface.private_key.clone(),
             disabled: false,
         });
         list_members.push(DesiredListMember {
@@ -382,8 +382,8 @@ fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
     use crate::test_support::wg_key;
-    use awg::config::{InterfaceEntry, PeerEntry};
-    use router::config::{BgpPeerEntry, NodeIdentity};
+    use sliplib_config::awg::{InterfaceEntry, PeerEntry};
+    use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
 
     fn router_config() -> RouterConfig {
         RouterConfig {
@@ -407,7 +407,7 @@ mod tests {
             name: name.to_string(),
             listen_port: port,
             addresses: vec![],
-            private_key: wg_key("own"),
+            private_key: wg_key("own").into(),
             obfuscation: Default::default(),
             handshake_stale_secs: None,
             peers: vec![],
@@ -436,7 +436,7 @@ mod tests {
         let mut router = router_config();
         router.ospf_interfaces = vec!["mesh-*".to_string()];
 
-        router.bfd = Some(router::config::BfdSettings {
+        router.bfd = Some(sliplib_config::router::BfdSettings {
             min_rx_ms: 500,
             ..Default::default()
         });
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn announce_entries_are_always_included_regardless_of_live_state() {
         let mut router = router_config();
-        router.announce.push(router::config::AnnounceEntry {
+        router.announce.push(sliplib_config::router::AnnounceEntry {
             net: "172.16.0.0/24".to_string(),
             label: None,
         });

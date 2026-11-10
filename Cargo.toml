@@ -19,11 +19,11 @@ path = "src/main.rs"
 [dependencies]
 # Ours, from a release tag: sliplib is not published to crates.io.
 # The patch format, shared with the generator and the daemons field for field.
-sliplib-config = { git = "https://github.com/slipmesh/sliplib", rev = "8f523c83bd60f5696cecfbfb10c522aa04901e34" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", rev = "8f523c83bd60f5696cecfbfb10c522aa04901e34" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", rev = "8f523c83bd60f5696cecfbfb10c522aa04901e34", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", rev = "8f523c83bd60f5696cecfbfb10c522aa04901e34" }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", rev = "8f523c83bd60f5696cecfbfb10c522aa04901e34" }
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0", default-features = false }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

@@ -52,9 +52,9 @@ mod tests {
 
     #[test]
     fn parses_all_fields() {
-        let yaml = "host: 192.168.88.1\nport: 8729\nusername: ansible\npassword: hunter2\n";
+        let yaml = "host: 203.0.113.1\nport: 8729\nusername: ansible\npassword: hunter2\n";
         let creds = parse_from_yaml(yaml).unwrap();
-        assert_eq!(creds.host, "192.168.88.1");
+        assert_eq!(creds.host, "203.0.113.1");
         assert_eq!(creds.port, 8729);
         assert_eq!(creds.username, "ansible");
         assert_eq!(creds.password, Some("hunter2".to_string()));
@@ -67,25 +67,25 @@ mod tests {
 
     #[test]
     fn missing_username_is_an_error() {
-        assert!(parse_from_yaml("host: 192.168.88.1\n").is_err());
+        assert!(parse_from_yaml("host: 203.0.113.1\n").is_err());
     }
 
     #[test]
     fn missing_port_defaults_to_api_ssl_port() {
-        let creds = parse_from_yaml("host: 192.168.88.1\nusername: ansible\n").unwrap();
+        let creds = parse_from_yaml("host: 203.0.113.1\nusername: ansible\n").unwrap();
         assert_eq!(creds.port, DEFAULT_PORT);
     }
 
     #[test]
     fn missing_password_is_none() {
-        let creds = parse_from_yaml("host: 192.168.88.1\nusername: ansible\n").unwrap();
+        let creds = parse_from_yaml("host: 203.0.113.1\nusername: ansible\n").unwrap();
         assert_eq!(creds.password, None);
     }
 
     #[test]
     fn empty_password_is_some_empty_string() {
         let creds =
-            parse_from_yaml("host: 192.168.88.1\nusername: ansible\npassword: \"\"\n").unwrap();
+            parse_from_yaml("host: 203.0.113.1\nusername: ansible\npassword: \"\"\n").unwrap();
         assert_eq!(creds.password, Some(String::new()));
     }
 

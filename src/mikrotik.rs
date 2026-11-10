@@ -476,8 +476,8 @@ pub async fn read_physically_connected_prefixes(
     Ok(prefixes)
 }
 
-/// Normalizes a host address-with-prefix (as configured on an interface, e.g. `"192.168.88.1/24"`)
-/// to its containing network base (`"192.168.88.0/24"`) - `ip address` rows carry the host
+/// Normalizes a host address-with-prefix (as configured on an interface, e.g. `"203.0.113.1/27"`)
+/// to its containing network base (`"203.0.113.0/27"`) - `ip address` rows carry the host
 /// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<String> {
     Ok(sliplib_net::parse_ipv4(address)?.trunc().to_string())
@@ -1229,13 +1229,13 @@ mod tests {
     fn parses_wireguard_interface_row() {
         let r = row(&[
             (".id", "*1"),
-            ("name", "mesh-fra"),
+            ("name", "mesh-east"),
             ("listen-port", "51820"),
             ("private-key", "abc="),
         ]);
         let iface = parse_wireguard_interface(&r).unwrap();
         assert_eq!(iface.id, "*1");
-        assert_eq!(iface.name, "mesh-fra");
+        assert_eq!(iface.name, "mesh-east");
         assert_eq!(iface.listen_port, 51820);
         assert!(!iface.disabled);
         assert_eq!(iface.mtu, None);
@@ -1245,7 +1245,7 @@ mod tests {
     fn a_wireguard_interface_reads_its_mtu() {
         let r = row(&[
             (".id", "*1"),
-            ("name", "mesh-fra"),
+            ("name", "mesh-east"),
             ("listen-port", "51820"),
             ("mtu", "1420"),
         ]);
@@ -1262,22 +1262,25 @@ mod tests {
     fn wireguard_peer_uses_comment_as_the_label_field() {
         let r = row(&[
             (".id", "*2"),
-            ("interface", "mesh-fra"),
-            ("comment", "fra1"),
+            ("interface", "mesh-east"),
+            ("comment", "east1"),
             ("public-key", "pub="),
             ("allowed-address", "0.0.0.0/0,::/0"),
         ]);
         let peer = parse_wireguard_peer(&r).unwrap();
-        assert_eq!(peer.name, "fra1");
+        assert_eq!(peer.name, "east1");
     }
 
     #[test]
     fn address_to_network_normalizes_host_address_to_network_base() {
         assert_eq!(
-            address_to_network("192.168.88.5/24").unwrap(),
-            "192.168.88.0/24"
+            address_to_network("203.0.113.37/27").unwrap(),
+            "203.0.113.32/27"
         );
-        assert_eq!(address_to_network("10.0.0.1/32").unwrap(), "10.0.0.1/32");
+        assert_eq!(
+            address_to_network("198.51.100.1/32").unwrap(),
+            "198.51.100.1/32"
+        );
     }
 
     #[test]
@@ -1289,7 +1292,7 @@ mod tests {
     fn ospf_template_passive_raw_is_none_when_flag_absent() {
         let r = row(&[
             (".id", "*1"),
-            ("interfaces", "mesh-fra"),
+            ("interfaces", "mesh-east"),
             ("area", "backbone"),
         ]);
         let t = parse_ospf_template(&r).unwrap();
@@ -1326,7 +1329,7 @@ mod tests {
     /// value, and the whole run aborts on it - an unset flag must not reach the device at all.
     #[test]
     fn ipv6_address_settings_leave_out_an_unset_auto_link_local() {
-        let settings = ipv6_address_settings(&ipv6_address("fd00::1/128", None));
+        let settings = ipv6_address_settings(&ipv6_address("3fff::1/128", None));
         assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
     }
 
@@ -1340,12 +1343,12 @@ mod tests {
     fn parses_ipv6_address_row() {
         let r = row(&[
             (".id", "*1"),
-            ("address", "fd00::1/128"),
+            ("address", "3fff::1/128"),
             ("interface", "router-lo"),
             ("advertise", "false"),
         ]);
         let a = parse_ipv6_address(&r).unwrap();
-        assert_eq!(a.address, "fd00::1/128");
+        assert_eq!(a.address, "3fff::1/128");
         assert_eq!(a.interface, "router-lo");
         assert!(!a.advertise);
     }
@@ -1354,18 +1357,18 @@ mod tests {
     fn parses_bgp_connection_row_with_ipv6_addresses_and_multihop_afi() {
         let r = row(&[
             (".id", "*1"),
-            ("name", "bgp-fra"),
+            ("name", "bgp-east"),
             ("instance", "default"),
-            ("local.address", "fd00::1"),
+            ("local.address", "3fff::1"),
             ("local.role", "ibgp"),
-            ("remote.address", "fd00::2"),
+            ("remote.address", "3fff::2"),
             ("multihop", "true"),
             ("afi", "ip"),
             ("output.network", "bgp-networks"),
         ]);
         let c = parse_bgp_connection(&r).unwrap();
-        assert_eq!(c.local_address, "fd00::1".parse::<Ipv6Addr>().unwrap());
-        assert_eq!(c.remote_address, "fd00::2".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(c.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(c.remote_address, "3fff::2".parse::<Ipv6Addr>().unwrap());
         assert!(c.multihop);
         assert_eq!(c.afi, "ip");
     }

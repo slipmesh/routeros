@@ -33,7 +33,7 @@ mod validate_endpoint_tests {
     #[test]
     fn accepts_hostnames_and_addresses() {
         assert!(validate_endpoint("router1.example.com").is_ok());
-        assert!(validate_endpoint("192.168.88.1").is_ok());
+        assert!(validate_endpoint("192.0.2.1").is_ok());
         assert!(validate_endpoint("2001:db8::1").is_ok());
     }
 

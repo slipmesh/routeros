@@ -1525,24 +1525,24 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sliplib-net"
-version = "0.7.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
+version = "0.8.0"
+source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.7.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
+version = "0.8.0"
+source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.7.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
+version = "0.8.0"
+source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -1553,13 +1553,12 @@ dependencies = [
 
 [[package]]
 name = "sliplib-yaml"
-version = "0.7.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
+version = "0.8.0"
+source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
 dependencies = [
  "anyhow",
  "atomic-write-file",
  "serde",
- "yaml-rt",
  "yaml_serde",
 ]
 
@@ -2106,33 +2105,6 @@ dependencies = [
  "getrandom 0.4.3",
  "rand_core",
  "zeroize",
-]
-
-[[package]]
-name = "yaml-rt"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9860179b71d46ad0a748837d85389cc76b928219d8f7ec797ba76a0c5164ebe6"
-dependencies = [
- "yaml-rt-core",
- "yaml-rt-derive",
-]
-
-[[package]]
-name = "yaml-rt-core"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8799292abae6f3464beb9e2c2b8ba7be371f6c026ce4b36e3b2f0ecb584bc47"
-
-[[package]]
-name = "yaml-rt-derive"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaa4ef35ca5c0d82872abb7981498553844f4ef9148c5af1ab53b5c1b69b7ee6"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]

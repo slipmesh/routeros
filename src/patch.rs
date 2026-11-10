@@ -28,12 +28,11 @@ struct ConfigFile {
     content: String,
 }
 
-fn documents(yaml: &MultiDoc) -> anyhow::Result<Vec<Value>> {
-    Ok(yaml
-        .documents()?
-        .into_iter()
-        .map(|document| document.value)
-        .collect())
+fn documents(yaml: &MultiDoc) -> Vec<Value> {
+    yaml.documents()
+        .iter()
+        .map(|document| document.value.clone())
+        .collect()
 }
 
 fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
@@ -55,7 +54,7 @@ fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
 
 /// The error names the file.
 pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
-    let docs = documents(&MultiDoc::read(path)?)?;
+    let docs = documents(&MultiDoc::read(path)?);
 
     let awg_content = segment_content(&docs, "awg")?;
     let awg: AwgConfig = sliplib_yaml::from_str(&awg_content)
@@ -109,7 +108,7 @@ mod tests {
     #[test]
     fn foreign_documents_are_ignored_when_extracting_owned_segments() {
         let raw = [FOREIGN_DOC, AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join("---\n");
-        let docs = documents(&MultiDoc::parse(&raw).unwrap()).unwrap();
+        let docs = documents(&MultiDoc::parse(&raw).unwrap());
         assert_eq!(
             segment_content(&docs, "awg").unwrap().trim(),
             "interfaces: []"
@@ -123,7 +122,7 @@ mod tests {
             ("router", [AWG_DOC, MIKROTIK_DOC]),
             ("mikrotik", [AWG_DOC, ROUTER_DOC]),
         ] {
-            let docs = documents(&MultiDoc::parse(&others.join("---\n")).unwrap()).unwrap();
+            let docs = documents(&MultiDoc::parse(&others.join("---\n")).unwrap());
             assert!(segment_content(&docs, name).is_err(), "{name}");
         }
     }

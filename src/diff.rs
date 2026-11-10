@@ -143,6 +143,8 @@ pub struct DesiredWireguardInterface {
     pub listen_port: u16,
     pub private_key_b64: PrivateKey,
     pub disabled: bool,
+    /// None leaves the interface at the MTU it has.
+    pub mtu: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +154,7 @@ pub struct CurrentWireguardInterface {
     pub listen_port: u16,
     pub private_key_b64: PrivateKey,
     pub disabled: bool,
+    pub mtu: Option<u32>,
 }
 
 impl HasId for CurrentWireguardInterface {
@@ -175,6 +178,7 @@ pub fn wireguard_interfaces(
             // every run would rewrite a live interface, peers and OSPF adjacency with it.
             (c.listen_port, c.disabled, &c.private_key_b64)
                 == (d.listen_port, d.disabled, &d.private_key_b64)
+                && d.mtu.is_none_or(|mtu| c.mtu == Some(mtu))
         },
     )
 }
@@ -730,6 +734,7 @@ mod wireguard_interfaces_tests {
             listen_port: port,
             private_key_b64: wg_key("interface").into(),
             disabled: false,
+            mtu: None,
         }
     }
 
@@ -740,7 +745,20 @@ mod wireguard_interfaces_tests {
             listen_port: port,
             private_key_b64: wg_key("interface").into(),
             disabled: false,
+            mtu: Some(1420),
         }
+    }
+
+    #[test]
+    fn an_interface_is_updated_to_the_mtu_asked_for_and_left_at_its_own_otherwise() {
+        let cur = vec![current("*1", "mesh-fra", 51820)];
+        let mut asked = desired("mesh-fra", 51820);
+        asked.mtu = Some(1440);
+        let plan = wireguard_interfaces(&cur, std::slice::from_ref(&asked));
+        assert_eq!(plan.update, vec![("*1".to_string(), asked.clone())]);
+        asked.mtu = Some(1420);
+        assert!(wireguard_interfaces(&cur, &[asked]).is_empty());
+        assert!(wireguard_interfaces(&cur, &[desired("mesh-fra", 51820)]).is_empty());
     }
 
     #[test]

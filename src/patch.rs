@@ -8,8 +8,8 @@ use anyhow::Context;
 use awg::config::AwgConfig;
 use router::config::RouterConfig;
 use serde::Deserialize;
+use sliplib_yaml::{MultiDoc, Value};
 use std::path::Path;
-use yaml_serde::Value;
 
 pub struct PatchFile {
     pub awg: AwgConfig,
@@ -28,11 +28,11 @@ struct ConfigFile {
     content: String,
 }
 
-fn documents(raw: &str) -> anyhow::Result<Vec<Value>> {
-    yaml_serde::Deserializer::from_str(raw)
-        .map(Value::deserialize)
-        .collect::<Result<_, _>>()
-        .context("patch file is not valid YAML")
+fn documents(yaml: &MultiDoc) -> Vec<Value> {
+    yaml.documents()
+        .iter()
+        .map(|document| document.value.clone())
+        .collect()
 }
 
 fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
@@ -42,7 +42,7 @@ fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
         .with_context(|| {
             format!("patch file has no ExtensionServiceConfig document named {name:?}")
         })?;
-    let envelope: Envelope = yaml_serde::from_value(document.clone())
+    let envelope: Envelope = sliplib_yaml::from_value(document.clone())
         .with_context(|| format!("malformed {name:?} document"))?;
     envelope
         .config_files
@@ -52,18 +52,17 @@ fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
         .with_context(|| format!("{name:?} document has no configFiles entries"))
 }
 
-/// Errors leave naming the file to the caller, which adds it as context once for all of them.
+/// The error names the file.
 pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
-    let raw = std::fs::read_to_string(path)?;
-    let docs = documents(&raw)?;
+    let docs = documents(&MultiDoc::read(path)?);
 
     let awg_content = segment_content(&docs, "awg")?;
-    let awg: AwgConfig = yaml_serde::from_str(&awg_content)
+    let awg: AwgConfig = sliplib_yaml::from_str(&awg_content)
         .map_err(|e| anyhow::anyhow!("malformed \"awg\" document content: {e}"))?;
     awg::config::validate(&awg).map_err(|e| anyhow::anyhow!("invalid \"awg\" config: {e}"))?;
 
     let router_content = segment_content(&docs, "router")?;
-    let router: RouterConfig = yaml_serde::from_str(&router_content)
+    let router: RouterConfig = sliplib_yaml::from_str(&router_content)
         .map_err(|e| anyhow::anyhow!("malformed \"router\" document content: {e}"))?;
     router::config::validate(&router)
         .map_err(|e| anyhow::anyhow!("invalid \"router\" config: {e}"))?;
@@ -108,11 +107,8 @@ mod tests {
 
     #[test]
     fn foreign_documents_are_ignored_when_extracting_owned_segments() {
-        let docs = documents(&[FOREIGN_DOC, AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join(
-            "---
-",
-        ))
-        .unwrap();
+        let raw = [FOREIGN_DOC, AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join("---\n");
+        let docs = documents(&MultiDoc::parse(&raw).unwrap());
         assert_eq!(
             segment_content(&docs, "awg").unwrap().trim(),
             "interfaces: []"
@@ -126,11 +122,7 @@ mod tests {
             ("router", [AWG_DOC, MIKROTIK_DOC]),
             ("mikrotik", [AWG_DOC, ROUTER_DOC]),
         ] {
-            let docs = documents(&others.join(
-                "---
-",
-            ))
-            .unwrap();
+            let docs = documents(&MultiDoc::parse(&others.join("---\n")).unwrap());
             assert!(segment_content(&docs, name).is_err(), "{name}");
         }
     }

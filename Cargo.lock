@@ -1525,24 +1525,24 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sliplib-net"
-version = "0.8.0"
-source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
+version = "0.9.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.9.0#c560faaee9da65ea612bbebac1f8572dc33c6f9d"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.8.0"
-source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
+version = "0.9.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.9.0#c560faaee9da65ea612bbebac1f8572dc33c6f9d"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.8.0"
-source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
+version = "0.9.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.9.0#c560faaee9da65ea612bbebac1f8572dc33c6f9d"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -1553,8 +1553,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-yaml"
-version = "0.8.0"
-source = "git+https://github.com/slipmesh/sliplib?rev=bb130901da5cd425361d02e9bd703f524cab24b4#bb130901da5cd425361d02e9bd703f524cab24b4"
+version = "0.9.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.9.0#c560faaee9da65ea612bbebac1f8572dc33c6f9d"
 dependencies = [
  "anyhow",
  "atomic-write-file",

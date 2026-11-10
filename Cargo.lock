@@ -80,6 +80,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic-write-file"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae67d5c03ee972c101a1d8db3ddbf8a9c819ad1ea9d6fd9cd385605547b60edb"
+dependencies = [
+ "nix",
+ "rand",
+]
+
+[[package]]
 name = "awg"
 version = "1.14.5+sm.2"
 source = "git+https://github.com/slipmesh/talos-extensions?tag=v1.14.5%2Bsm.2#5a0061e783063c35771a0f600ebd8682f138ec15"
@@ -936,6 +946,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1251,9 +1273,9 @@ dependencies = [
  "sliplib-net",
  "sliplib-runtime",
  "sliplib-secrets",
+ "sliplib-yaml",
  "tokio",
  "tracing",
- "yaml_serde",
 ]
 
 [[package]]
@@ -1503,30 +1525,42 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sliplib-net"
-version = "0.6.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
+version = "0.7.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.6.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
+version = "0.7.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.6.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.6.0#b1874b04a0a09b5d1714f7242a2041d95b188000"
+version = "0.7.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
 dependencies = [
  "base64",
  "curve25519-dalek",
  "serde",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "sliplib-yaml"
+version = "0.7.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.7.0#4be11f2a3aa66e8b973071899b1dfdd46a41b39e"
+dependencies = [
+ "anyhow",
+ "atomic-write-file",
+ "serde",
+ "yaml-rt",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -2072,6 +2106,33 @@ dependencies = [
  "getrandom 0.4.3",
  "rand_core",
  "zeroize",
+]
+
+[[package]]
+name = "yaml-rt"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9860179b71d46ad0a748837d85389cc76b928219d8f7ec797ba76a0c5164ebe6"
+dependencies = [
+ "yaml-rt-core",
+ "yaml-rt-derive",
+]
+
+[[package]]
+name = "yaml-rt-core"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8799292abae6f3464beb9e2c2b8ba7be371f6c026ce4b36e3b2f0ecb584bc47"
+
+[[package]]
+name = "yaml-rt-derive"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaa4ef35ca5c0d82872abb7981498553844f4ef9148c5af1ab53b5c1b69b7ee6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

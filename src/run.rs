@@ -14,8 +14,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .map_err(|_| anyhow::anyhow!("failed to install default rustls crypto provider"))?;
 
     let path = Path::new(&cli.patches_dir).join(format!("{}.yaml", cli.node));
-    let patch_file = patch::read_patch_file(&path)
-        .with_context(|| format!("failed to read patch file {}", path.display()))?;
+    let patch_file = patch::read_patch_file(&path).context("failed to read the patch file")?;
 
     let device = crate::mikrotik::connect(&patch_file.credentials)
         .await

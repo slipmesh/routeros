@@ -17,16 +17,13 @@ name = "slipmesh-routeros"
 path = "src/main.rs"
 
 [dependencies]
-# This tool has to agree with the daemons field for field, so it uses their own config types. The
-# tag names the talos-extensions release whose config format it targets.
-awg = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.2", default-features = false }
-router = { git = "https://github.com/slipmesh/talos-extensions", tag = "v1.14.5+sm.2", default-features = false }
-
 # Ours, from a release tag: sliplib is not published to crates.io.
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.9.0" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.9.0", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.9.0" }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.9.0" }
+# The patch format, shared with the generator and the daemons field for field.
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0", default-features = false }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.10.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

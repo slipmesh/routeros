@@ -3,17 +3,17 @@
 ## Lines and versions
 
 This tool converges a RouterOS device to the same per-node config the daemons of talos-extensions
-read, through their own config types, so it follows talos-extensions' release lines. A release is
+read, so it follows talos-extensions' release lines. A release is
 named after the Talos line it is cut for: the Talos patch current when it comes out, plus a
 revision, such as `v1.14.5+sm.1`. Nothing here depends on a Talos patch, so a new Talos patch needs
 no release here; the patch in the name only records when the release came out. The revision starts
 at 1 for every Talos patch and counts releases against it. Releases up to `v0.2.4` were plain
 semver from `main`.
 
-Each branch takes `awg` and `router` from a talos-extensions release of its own line, by tag in
-`Cargo.toml`. Renovate moves that tag within the branch's line, to a later Talos patch or `+sm.N`,
-together with `Cargo.lock`, and never to another line: `main` moves to the next line by hand
-(`cargo update -p awg -p router`), as a pull request like any other.
+The config types are the ones the daemons use. On `main` they come from `sliplib-config`, by
+sliplib tag in `Cargo.toml`, as talos-extensions' `main` takes them. `release-1.14` takes them from
+`awg` and `router` of a talos-extensions 1.14 release, by tag; Renovate moves that tag within the
+line, to a later Talos patch or `+sm.N`, together with `Cargo.lock`, and never to another line.
 
 Stable releases come only from `release-1.X` branches, one per Talos minor; `main` follows the next
 minor. A change that breaks how a `slipmesh.yaml` is applied to a device lands only on `main`, with

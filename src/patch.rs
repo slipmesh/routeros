@@ -5,9 +5,9 @@
 
 use crate::credentials::{self, RouterCredentials};
 use anyhow::Context;
-use awg::config::AwgConfig;
-use router::config::RouterConfig;
-use serde::Deserialize;
+use sliplib_config::awg::AwgConfig;
+use sliplib_config::router::RouterConfig;
+use sliplib_config::talos::ExtensionServiceConfig;
 use sliplib_yaml::{MultiDoc, Value};
 use std::path::Path;
 
@@ -15,17 +15,6 @@ pub struct PatchFile {
     pub awg: AwgConfig,
     pub router: RouterConfig,
     pub credentials: RouterCredentials,
-}
-
-#[derive(Deserialize)]
-struct Envelope {
-    #[serde(rename = "configFiles", default)]
-    config_files: Vec<ConfigFile>,
-}
-
-#[derive(Deserialize)]
-struct ConfigFile {
-    content: String,
 }
 
 fn documents(yaml: &MultiDoc) -> Vec<Value> {
@@ -36,15 +25,10 @@ fn documents(yaml: &MultiDoc) -> Vec<Value> {
 }
 
 fn segment_content(documents: &[Value], name: &str) -> anyhow::Result<String> {
-    let document = documents
-        .iter()
-        .find(|doc| doc["kind"] == "ExtensionServiceConfig" && doc["name"] == name)
+    ExtensionServiceConfig::find(documents, name)?
         .with_context(|| {
             format!("patch file has no ExtensionServiceConfig document named {name:?}")
-        })?;
-    let envelope: Envelope = sliplib_yaml::from_value(document.clone())
-        .with_context(|| format!("malformed {name:?} document"))?;
-    envelope
+        })?
         .config_files
         .into_iter()
         .next()
@@ -59,12 +43,13 @@ pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
     let awg_content = segment_content(&docs, "awg")?;
     let awg: AwgConfig = sliplib_yaml::from_str(&awg_content)
         .map_err(|e| anyhow::anyhow!("malformed \"awg\" document content: {e}"))?;
-    awg::config::validate(&awg).map_err(|e| anyhow::anyhow!("invalid \"awg\" config: {e}"))?;
+    sliplib_config::awg::validate(&awg)
+        .map_err(|e| anyhow::anyhow!("invalid \"awg\" config: {e}"))?;
 
     let router_content = segment_content(&docs, "router")?;
     let router: RouterConfig = sliplib_yaml::from_str(&router_content)
         .map_err(|e| anyhow::anyhow!("malformed \"router\" document content: {e}"))?;
-    router::config::validate(&router)
+    sliplib_config::router::validate(&router)
         .map_err(|e| anyhow::anyhow!("invalid \"router\" config: {e}"))?;
 
     let credentials_content = segment_content(&docs, "mikrotik")?;

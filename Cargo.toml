@@ -22,7 +22,7 @@ path = "src/main.rs"
 sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.11.0" }
 sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.11.0" }
 sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.11.0", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.11.0" }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.12.0" }
 sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.11.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 

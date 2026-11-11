@@ -598,7 +598,7 @@ dependencies = [
  "sliplib-config",
  "sliplib-net",
  "sliplib-runtime",
- "sliplib-secrets",
+ "sliplib-secrets 0.12.0",
  "sliplib-yaml",
  "tokio",
  "tracing",
@@ -757,7 +757,7 @@ dependencies = [
  "anyhow",
  "serde",
  "sliplib-net",
- "sliplib-secrets",
+ "sliplib-secrets 0.11.0",
  "sliplib-yaml",
 ]
 
@@ -781,6 +781,18 @@ dependencies = [
 name = "sliplib-secrets"
 version = "0.11.0"
 source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4fad11011e9cd24e6ed99d9"
+dependencies = [
+ "base64",
+ "curve25519-dalek",
+ "serde",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "sliplib-secrets"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
 dependencies = [
  "base64",
  "curve25519-dalek",

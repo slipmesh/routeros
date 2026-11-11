@@ -596,7 +596,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "sliplib-config",
- "sliplib-net",
+ "sliplib-net 0.12.0",
  "sliplib-runtime",
  "sliplib-secrets",
  "sliplib-yaml",
@@ -756,7 +756,7 @@ source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4
 dependencies = [
  "anyhow",
  "serde",
- "sliplib-net",
+ "sliplib-net 0.11.0",
  "sliplib-secrets",
  "sliplib-yaml",
 ]
@@ -765,6 +765,14 @@ dependencies = [
 name = "sliplib-net"
 version = "0.11.0"
 source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4fad11011e9cd24e6ed99d9"
+dependencies = [
+ "ipnet",
+]
+
+[[package]]
+name = "sliplib-net"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
 dependencies = [
  "ipnet",
 ]

@@ -596,10 +596,10 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "sliplib-config",
- "sliplib-net",
+ "sliplib-net 0.11.0",
  "sliplib-runtime",
- "sliplib-secrets",
- "sliplib-yaml",
+ "sliplib-secrets 0.11.0",
+ "sliplib-yaml 0.11.0",
  "tokio",
  "tracing",
 ]
@@ -751,20 +751,28 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sliplib-config"
-version = "0.11.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4fad11011e9cd24e6ed99d9"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
 dependencies = [
  "anyhow",
  "serde",
- "sliplib-net",
- "sliplib-secrets",
- "sliplib-yaml",
+ "sliplib-net 0.12.0",
+ "sliplib-secrets 0.12.0",
+ "sliplib-yaml 0.12.0",
 ]
 
 [[package]]
 name = "sliplib-net"
 version = "0.11.0"
 source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4fad11011e9cd24e6ed99d9"
+dependencies = [
+ "ipnet",
+]
+
+[[package]]
+name = "sliplib-net"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
 dependencies = [
  "ipnet",
 ]
@@ -790,9 +798,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "sliplib-secrets"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
+dependencies = [
+ "base64",
+ "curve25519-dalek",
+ "serde",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "sliplib-yaml"
 version = "0.11.0"
 source = "git+https://github.com/slipmesh/sliplib?tag=v0.11.0#be8d9005133a5b3cb4fad11011e9cd24e6ed99d9"
+dependencies = [
+ "anyhow",
+ "atomic-write-file",
+ "serde",
+ "yaml_serde",
+]
+
+[[package]]
+name = "sliplib-yaml"
+version = "0.12.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.12.0#bb85effc53af72ac48a91937fd8ac2b473cd5ba4"
 dependencies = [
  "anyhow",
  "atomic-write-file",

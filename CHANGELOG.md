@@ -5,7 +5,64 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
-## [0.2.4] - 2026-10-27
+## [1.15.0-beta.0+sm.1] - 2026-11-12
+
+### Added ✨
+
+- Give each routeros wireguard interface the mtu its awg interface has (#50)
+
+### Build system 🛠️
+
+- Update rust crate base64 to 0.23.1 (main) (#33)
+- Update talos-extensions to v1.14.5+sm.2 (main) (#34)
+- Update sliplib to v0.12.0 (main) (#54)
+
+### CI/CD ⚙️
+
+- Call the shared workflows at slipmesh/.github@v2.4 (#30)
+- Check licenses and ship third-party notices through slipmesh/.github@v3.1.0 (#39)
+
+### Changed 🔧
+
+- Take the private key type and clamping from sliplib-secrets (#38)
+- Log through sliplib-runtime (#41)
+- Take cidr parsing from sliplib-net (#44)
+- Read the patch file through sliplib-yaml (#45)
+- Take the patch format from sliplib-config (#49)
+
+### Documentation 📚
+
+- Tag alpha.0 when branching a line (#32)
+
+### Fixed 🐛
+
+- Name the patch file once in a read error (#42)
+- Log info lines when rust_log is unset (#43)
+
+### Tests ✅
+
+- Tidy up fixtures (#51)
+
+## [1.15.0-alpha.0] - 2026-11-02
+
+### Build system 🛠️
+
+- Commit Cargo.lock (#24)
+- Follow the talos-extensions release lines (#28)
+
+### CI/CD ⚙️
+
+- Take the release notes from git-cliff through slipmesh/.github@v1.2 (#21)
+- Build only the merged release PR, through the v2 shared workflows (#22)
+- Mark the newest stable release latest, through slipmesh/.github@v2.1 (#23)
+- Skip a release commit that is already tagged, through slipmesh/.github@v2.2 (#25)
+- Call the shared workflows at slipmesh/.github@v2.3 (#26)
+
+### Miscellaneous 🧹
+
+- Hand dependency updates to renovate (#27)
+
+## [0.2.4] - 2026-10-28
 
 ### CI/CD ⚙️
 

@@ -3,6 +3,6 @@
 
 too-many-arguments-threshold = 8
 
-# `converge::run` applies the fourteen tables in order in one function, and `config::desired_state`
+# `converge::run` applies the tables in fourteen steps in one function, and `config::desired_state`
 # builds them in one, each with branches per table.
 cognitive-complexity-threshold = 50

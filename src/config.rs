@@ -89,10 +89,9 @@ fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> 
     ))
 }
 
-/// Only the suffix-`*` grammar `slipmesh.yaml`/`render.rs` actually produce (`"mesh-*"`) -
-/// sufficient for `ospf_interfaces`/`direct_interfaces`, both fed straight into BIRD's own
-/// glob-capable `interface` clause on Linux nodes. RouterOS has no equivalent daemon-level pattern
-/// engine to lean on, so this tool matches locally instead.
+/// Only the suffix-`*` grammar the node's configs use (`"mesh-*"`), enough for `ospf_interfaces`
+/// and `direct_interfaces`: RouterOS has no pattern engine to hand them to, so this tool matches
+/// locally.
 fn glob_match(pattern: &str, name: &str) -> bool {
     match pattern.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),
@@ -266,9 +265,9 @@ pub fn desired_state(
 
     // Announce set: physically-connected prefixes on an interface matching `direct_interfaces`,
     // physically-connected prefixes falling inside a `learn` range, and literal `announce` entries
-    // - the same three sources BIRD's export filter uses on a Linux node. Own loopback /32 is
-    // always announced on top, independent of these fields - every mesh node's own loopback must
-    // stay reachable via RFC 8950 regardless of what it declares as "directly connected".
+    // - the node's three announcement sources. Own loopback /32 is always announced on top,
+    // independent of these fields - every mesh node's own loopback must stay reachable via RFC 8950
+    // regardless of what it declares as "directly connected".
     let mut bgp_network_addrs: BTreeSet<String> = BTreeSet::new();
     for (iface, prefix) in physically_connected {
         let direct = router

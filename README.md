@@ -75,6 +75,8 @@ every pull request.
 
 ## Development
 
+The code follows [docs/CODESTYLE.md](docs/CODESTYLE.md).
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
@@ -90,5 +92,5 @@ Merging it releases it: that push alone builds `slipmesh-routeros-linux-{amd64,a
 commit once the build succeeds, and attaches them with a `SHA256SUMS` to the GitHub Release. Every
 other push and pull request runs only the checks, and `cargo audit` also runs weekly. The release
 build waits for every check of its own push, `cargo audit` included; an advisory with no fix yet is
-ignored in `.cargo/audit.toml`, with the reason next to it. Release lines, versions and the steps
-are in [docs/RELEASING.md](docs/RELEASING.md).
+ignored in a `.cargo/audit.toml`, with the reason next to it - there is none today. Release lines,
+versions and the steps are in [docs/RELEASING.md](docs/RELEASING.md).

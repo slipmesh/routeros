@@ -31,7 +31,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Whether this run writes to the device: never under `--check`.
     pub fn applies(&self) -> bool {
         !self.check
     }

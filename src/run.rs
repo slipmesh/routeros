@@ -4,6 +4,7 @@
 use crate::cli::Cli;
 use crate::config;
 use crate::converge::{self, ConvergeReport};
+use crate::credentials;
 use crate::patch;
 use anyhow::Context;
 use std::path::Path;
@@ -16,7 +17,9 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
     let path = Path::new(&cli.patches_dir).join(format!("{}.yaml", cli.node));
     let patch_file = patch::read_patch_file(&path).context("failed to read the patch file")?;
 
-    let device = crate::mikrotik::connect(&patch_file.credentials)
+    let credentials = credentials::from_env()?;
+
+    let device = crate::mikrotik::connect(&credentials)
         .await
         .context("failed to connect to the RouterOS device")?;
 

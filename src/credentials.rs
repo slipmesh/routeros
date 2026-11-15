@@ -1,101 +1,158 @@
-//! Parses RouterOS API connection credentials from the `mikrotik` document of the node's patch
-//! file - a hand-written `kind: patch` document of `slipmesh.yaml` that `slipmesh-taloscfg
-//! generate` passes through to that node. `routeros` only ever reads it.
+//! RouterOS API connection credentials, from the environment of the process. They are not part of
+//! the mesh's desired state, and an environment variable never shows up in a process listing the
+//! way a command-line flag does.
 
-use serde::Deserialize;
+use anyhow::{Context, bail};
+use std::env::VarError;
 
 const DEFAULT_PORT: u16 = 8729; // RouterOS API-SSL default - TLS is mandatory.
+
+pub const HOST: &str = "SLIPMESH_ROUTEROS_HOST";
+pub const PORT: &str = "SLIPMESH_ROUTEROS_PORT";
+pub const USERNAME: &str = "SLIPMESH_ROUTEROS_USERNAME";
+pub const PASSWORD: &str = "SLIPMESH_ROUTEROS_PASSWORD";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouterCredentials {
     pub host: String,
     pub port: u16,
     pub username: String,
-    /// `None` when the `password` key is absent from the document; `Some(String::new())` when
-    /// it's present but empty - `mikrotik-rs` treats these differently (`Option<&str>`).
+    /// `None` when `SLIPMESH_ROUTEROS_PASSWORD` is unset; `Some(String::new())` when it is set
+    /// but empty - `mikrotik-rs` treats these differently (`Option<&str>`).
     pub password: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
-struct RawCredentials {
-    host: Option<String>,
-    port: Option<u16>,
-    username: Option<String>,
-    password: Option<String>,
+pub fn from_env() -> anyhow::Result<RouterCredentials> {
+    from_lookup(|name| std::env::var(name))
 }
 
-pub fn parse_from_yaml(content: &str) -> anyhow::Result<RouterCredentials> {
-    let raw: RawCredentials = sliplib_yaml::from_str(content)
-        .map_err(|e| anyhow::anyhow!("mikrotik credentials document is not valid YAML: {e}"))?;
+/// `var` answers the way `std::env::var` does.
+pub fn from_lookup(
+    var: impl Fn(&str) -> Result<String, VarError>,
+) -> anyhow::Result<RouterCredentials> {
+    let optional = |name: &str| match var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => bail!("{name} is not valid unicode"),
+    };
+    let required = |name: &str| match optional(name)? {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => bail!("{name} is not set"),
+    };
 
-    let host = raw
-        .host
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("mikrotik credentials document is missing \"host\""))?;
-
-    let username = raw
-        .username
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("mikrotik credentials document is missing \"username\""))?;
-
+    let host = required(HOST)?;
+    let username = required(USERNAME)?;
+    let port = match optional(PORT)? {
+        Some(port) => port
+            .parse()
+            .with_context(|| format!("{PORT} is not a port number: {port:?}"))?,
+        None => DEFAULT_PORT,
+    };
     Ok(RouterCredentials {
         host,
-        port: raw.port.unwrap_or(DEFAULT_PORT),
+        port,
         username,
-        password: raw.password,
+        password: optional(PASSWORD)?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
 
-    #[test]
-    fn parses_all_fields() {
-        let yaml = "host: 203.0.113.1\nport: 8729\nusername: ansible\npassword: hunter2\n";
-        let creds = parse_from_yaml(yaml).unwrap();
-        assert_eq!(creds.host, "203.0.113.1");
-        assert_eq!(creds.port, 8729);
-        assert_eq!(creds.username, "ansible");
-        assert_eq!(creds.password, Some("hunter2".to_string()));
+    fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Result<String, VarError> {
+        let vars: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |name| vars.get(name).cloned().ok_or(VarError::NotPresent)
+    }
+
+    fn error(vars: &[(&str, &str)]) -> String {
+        format!("{:#}", from_lookup(lookup(vars)).unwrap_err())
     }
 
     #[test]
-    fn missing_host_is_an_error() {
-        assert!(parse_from_yaml("username: ansible\n").is_err());
+    fn reads_all_four_variables() {
+        let creds = from_lookup(lookup(&[
+            (HOST, "203.0.113.1"),
+            (PORT, "8730"),
+            (USERNAME, "automation"),
+            (PASSWORD, "example-password"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            creds,
+            RouterCredentials {
+                host: "203.0.113.1".to_owned(),
+                port: 8730,
+                username: "automation".to_owned(),
+                password: Some("example-password".to_owned()),
+            }
+        );
     }
 
     #[test]
-    fn missing_username_is_an_error() {
-        assert!(parse_from_yaml("host: 203.0.113.1\n").is_err());
+    fn a_missing_or_empty_host_is_an_error_naming_it() {
+        assert!(error(&[(USERNAME, "automation")]).contains(HOST));
+        assert!(error(&[(HOST, ""), (USERNAME, "automation")]).contains(HOST));
     }
 
     #[test]
-    fn missing_port_defaults_to_api_ssl_port() {
-        let creds = parse_from_yaml("host: 203.0.113.1\nusername: ansible\n").unwrap();
-        assert_eq!(creds.port, DEFAULT_PORT);
+    fn a_missing_or_empty_username_is_an_error_naming_it() {
+        assert!(error(&[(HOST, "203.0.113.1")]).contains(USERNAME));
+        assert!(error(&[(HOST, "203.0.113.1"), (USERNAME, "")]).contains(USERNAME));
     }
 
     #[test]
-    fn missing_password_is_none() {
-        let creds = parse_from_yaml("host: 203.0.113.1\nusername: ansible\n").unwrap();
-        assert_eq!(creds.password, None);
+    fn an_unset_port_defaults_to_the_api_ssl_port() {
+        let creds = from_lookup(lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")]));
+        assert_eq!(creds.unwrap().port, DEFAULT_PORT);
     }
 
     #[test]
-    fn empty_password_is_some_empty_string() {
-        let creds =
-            parse_from_yaml("host: 203.0.113.1\nusername: ansible\npassword: \"\"\n").unwrap();
-        assert_eq!(creds.password, Some(String::new()));
+    fn a_port_that_is_not_a_port_number_is_an_error_naming_it() {
+        for port in ["", "x", "65536", "-1"] {
+            let err = error(&[
+                (HOST, "203.0.113.1"),
+                (USERNAME, "automation"),
+                (PORT, port),
+            ]);
+            assert!(err.contains(PORT), "{port:?}: {err}");
+        }
     }
 
     #[test]
-    fn malformed_yaml_is_an_error() {
-        assert!(parse_from_yaml("host: [unterminated\n").is_err());
+    fn an_unset_password_is_none() {
+        let creds = from_lookup(lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")]));
+        assert_eq!(creds.unwrap().password, None);
     }
 
     #[test]
-    fn empty_document_is_an_error() {
-        assert!(parse_from_yaml("").is_err());
+    fn an_empty_password_is_some_empty_string() {
+        let creds = from_lookup(lookup(&[
+            (HOST, "203.0.113.1"),
+            (USERNAME, "automation"),
+            (PASSWORD, ""),
+        ]));
+        assert_eq!(creds.unwrap().password, Some(String::new()));
+    }
+
+    #[test]
+    fn a_variable_that_is_not_unicode_is_an_error_naming_it() {
+        for name in [HOST, PORT, USERNAME, PASSWORD] {
+            let base = lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")]);
+            let var = |n: &str| {
+                if n == name {
+                    Err(VarError::NotUnicode(OsString::from("x")))
+                } else {
+                    base(n)
+                }
+            };
+            let err = format!("{:#}", from_lookup(var).unwrap_err());
+            assert!(err.contains(name), "{name}: {err}");
+        }
     }
 }

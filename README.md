@@ -33,9 +33,11 @@ Requires:
 
 - `slipmesh.yaml` with the node and every secret its configs need: the mesh private keys of the
   node and its peers, the obfuscation of each of its links that is not `plain`, and the private key
-  and obfuscation of each roadwarriors pool on it. A file that is missing, malformed or lacks one
-  of them is a fatal error before the device is touched; `slipmesh-taloscfg generate` writes the
-  secrets a file lacks.
+  of each roadwarriors pool on it, with its obfuscation unless the pool is `plain`. A file that is
+  missing, malformed or lacks one of them is a fatal error before the device is touched;
+  `slipmesh-taloscfg generate` writes the secrets a file lacks. This tool checks only what its own
+  node's configs need: a file the Talos generator refuses for a Talos-only reason - a template, a
+  patch document, an annotation - is still accepted here.
 - The device's API credentials in the environment:
 
   | variable | |
@@ -50,6 +52,16 @@ Requires:
   process listing.
 - Network access to the device's RouterOS API-SSL port (8729), with a TLS certificate the host's
   own trust store already validates.
+
+## Upgrading from the patch file
+
+- `--patches-dir` is gone: pass `--config` with the path of `slipmesh.yaml` instead.
+- The tool now reads the whole decrypted `slipmesh.yaml`, which holds every node's and every
+  pool's private key; the patch file held only this router's key and its peers' public keys.
+  Keep the plaintext where the encrypted file is kept, or let the wrapper above decrypt it for one
+  run.
+- The file must already hold the secrets: run `slipmesh-taloscfg generate` once first, so that
+  every key and obfuscation is written into it.
 
 ## What it converges
 

@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Ours, from a release tag: sliplib is not published to crates.io.
-# slipmesh.yaml and a node's configs, computed the way every platform's tool computes them.
+# slipmesh.yaml and a node's configs, computed from it.
 sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.14.0" }
 sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", tag = "v0.14.0" }
 sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.14.0" }

@@ -50,9 +50,8 @@ pub struct DesiredState {
     pub bgp_connections: Vec<DesiredBgpConnection>,
 }
 
-/// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (enforced by
-/// `sliplib_config::router::validate`, already run by `sliplib_mesh::render::node_configs`) - pulls
-/// both out by family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
+/// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (the router config is
+/// validated before it reaches here) - pulls both out by family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
 ///
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
 /// the interface; left at the default `yes`, the generated one comes back next to it on every boot

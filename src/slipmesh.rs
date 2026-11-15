@@ -101,4 +101,28 @@ configFiles:
         let err = format!("{:#}", read_node_configs(&path, "router1").err().unwrap());
         assert!(err.contains(&*path.to_string_lossy()), "{err}");
     }
+
+    #[test]
+    fn a_file_that_does_not_read_as_slipmesh_yaml_is_refused_naming_it() {
+        let path = written("malformed", &fixture().replace("  kind: network\n", ""));
+        let err = format!("{:#}", read_node_configs(&path, "router1").err().unwrap());
+        assert!(
+            err.contains(&format!("reading {}", path.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_peers_key_is_refused_naming_the_peer_and_the_key() {
+        let fixture = fixture().replace(
+            &format!("    mesh_private_key: \"{}\"\n", wg_key("node-a")),
+            "",
+        );
+        let path = written("no-peer-key", &fixture);
+        let err = format!("{:#}", read_node_configs(&path, "router1").err().unwrap());
+        assert!(
+            err.contains("node \"node-a\": mesh_private_key is not set"),
+            "{err}"
+        );
+    }
 }

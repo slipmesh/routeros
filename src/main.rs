@@ -4,9 +4,9 @@ mod converge;
 mod credentials;
 mod diff;
 mod mikrotik;
-mod patch;
 mod run;
 mod sanitize;
+mod slipmesh;
 #[cfg(test)]
 mod test_support;
 

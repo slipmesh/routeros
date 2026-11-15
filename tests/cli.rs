@@ -5,10 +5,12 @@ use std::process::Command;
 
 #[test]
 fn a_failed_run_exits_nonzero_and_logs_the_whole_error_chain() {
-    let patches_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-such-patches-dir");
+    let config = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("no-such-dir")
+        .join("slipmesh.yaml");
     let output = Command::new(env!("CARGO_BIN_EXE_slipmesh-routeros"))
-        .args(["--node", "node-a", "--patches-dir"])
-        .arg(&patches_dir)
+        .args(["--node", "node-a", "--config"])
+        .arg(&config)
         .env_remove("RUST_LOG")
         .output()
         .unwrap();
@@ -17,15 +19,10 @@ fn a_failed_run_exits_nonzero_and_logs_the_whole_error_chain() {
     let log = String::from_utf8(output.stdout).unwrap();
     assert!(log.contains("routeros failed"), "{log}");
     assert_eq!(
-        log.matches("failed to read the patch file").count(),
+        log.matches("failed to read the node's configs").count(),
         1,
         "{log}"
     );
-    let patch_file = patches_dir.join("node-a.yaml");
-    assert_eq!(
-        log.matches(&*patch_file.to_string_lossy()).count(),
-        1,
-        "{log}"
-    );
+    assert_eq!(log.matches(&*config.to_string_lossy()).count(), 1, "{log}");
     assert!(log.contains("No such file or directory"), "{log}");
 }

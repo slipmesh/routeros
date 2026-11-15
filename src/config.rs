@@ -1,5 +1,5 @@
 //! Pure "compute what this RouterOS device should look like" logic - translates the node's
-//! `AwgConfig`/`RouterConfig` into RouterOS's own tables. Touches neither the `patch` reader nor
+//! `AwgConfig`/`RouterConfig` into RouterOS's own tables. Touches neither the `slipmesh` reader nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
 use crate::diff::{
@@ -51,8 +51,8 @@ pub struct DesiredState {
 }
 
 /// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (enforced by
-/// `sliplib_config::router::validate`, already run in `patch::read_patch_file`) - pulls both out by
-/// family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
+/// `sliplib_config::router::validate`, already run by `sliplib_mesh::render::node_configs`) - pulls
+/// both out by family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
 ///
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
 /// the interface; left at the default `yes`, the generated one comes back next to it on every boot
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn mesh_interface_addresses_are_applied_verbatim_from_the_patch_file() {
+    fn mesh_interface_addresses_are_applied_verbatim_from_the_awg_config() {
         let mut i1 = iface("mesh-2", 51820);
         i1.addresses = vec!["fe80::c612:ff/64".to_string()];
         let mut i2 = iface("mesh-3", 51821);

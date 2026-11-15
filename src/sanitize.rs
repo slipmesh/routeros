@@ -1,6 +1,5 @@
-//! Allow-list validation for any string sourced from the patch file (`awg`/`router` documents,
-//! themselves already validated by `slipmesh-taloscfg generate`/`awg::config::validate`/
-//! `router::config::validate`) before it reaches a RouterOS command attribute. `mikrotik-rs`'s
+//! Allow-list validation for any string from the node's `awg`/`router` configs before it reaches
+//! a RouterOS command attribute. `mikrotik-rs`'s
 //! `CommandBuilder` transmits each attribute as its own length-prefixed API word - there's no
 //! single concatenated command line for an embedded separator to break out of the way there is for
 //! BIRD config text or an nftables ruleset - but a malformed value can still produce a confusing or
@@ -12,7 +11,7 @@
 //! (`InterfaceEntry::name`, `BgpPeerEntry::name`) - the one field with genuinely free-form syntax
 //! is a WireGuard peer's `endpoint` host, hence the single validator below.
 
-/// The host part of an `awg::config::PeerEntry::endpoint` (`"host:port"`, port already split off
+/// The host part of a `PeerEntry::endpoint` (`"host:port"`, port already split off
 /// by `config::parse_endpoint`), used directly as a RouterOS `endpoint-address`. Allows what a
 /// hostname or IPv4/IPv6 literal can actually contain: alphanumerics, `.`, `-`, `:`.
 pub fn validate_endpoint(endpoint: &str) -> anyhow::Result<()> {

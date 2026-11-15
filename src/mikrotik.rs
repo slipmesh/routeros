@@ -1,15 +1,10 @@
 //! Thin RouterOS device shim: TLS connection, and per-table `read_*`/`apply_*` functions whose
 //! types are exactly `diff.rs`'s `Current*`/`Plan<Desired*>`: I/O stays thin here so the pure
-//! layer can carry the tests. Row-parsing sub-pieces are still plain functions with their own unit
-//! tests; the actual socket I/O is verified manually against a real device instead, since no
-//! mocking framework exists anywhere in this ecosystem.
+//! layer can carry the tests. Row-parsing sub-pieces are plain functions with their own unit
+//! tests; the socket I/O is checked only against a live device.
 //!
-//! **Attribute-name/schema assumptions below are ported from the ansible `mesh`/`router` roles'
-//! own RouterOS API usage and MikroTik's documented API property names, not independently
-//! verified against a live device. Verify them on real hardware before trusting this in
-//! production,
-//! particularly `/interface/wireguard/peers`' `comment` field (used here as the peer-label
-//! attribute, since that table has no dedicated `name` property).**
+//! Attribute names are MikroTik's documented API property names. `/interface/wireguard/peers` has
+//! no `name` property, so its `comment` carries the peer label.
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
@@ -632,7 +627,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
 ///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
 ///   all of them. `config::desired_state` now applies the address explicitly
-///   (from `awg.interfaces[].addresses`, the same value `slipmesh-taloscfg generate` already computed), with
+///   (from `awg.interfaces[].addresses`), with
 ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
 ///   see `config::own_ipv6_address`.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real

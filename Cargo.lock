@@ -594,7 +594,6 @@ dependencies = [
  "mikrotik-rs",
  "rustls",
  "rustls-native-certs",
- "serde",
  "sliplib-config",
  "sliplib-net",
  "sliplib-runtime",

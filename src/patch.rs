@@ -1,9 +1,6 @@
 //! Reads the patch file `slipmesh-taloscfg generate` writes for a node (`<patches-dir>/<node>.yaml`)
-//! and extracts the `awg`/`router`/`mikrotik` `ExtensionServiceConfig` documents this tool needs.
-//! `mikrotik` comes from a `kind: patch` document of `slipmesh.yaml`, which the generator passes
-//! through to this node's patch file - see `credentials.rs`.
+//! and extracts the `awg`/`router` `ExtensionServiceConfig` documents this tool needs.
 
-use crate::credentials::{self, RouterCredentials};
 use anyhow::Context;
 use sliplib_config::awg::AwgConfig;
 use sliplib_config::router::RouterConfig;
@@ -14,7 +11,6 @@ use std::path::Path;
 pub struct PatchFile {
     pub awg: AwgConfig,
     pub router: RouterConfig,
-    pub credentials: RouterCredentials,
 }
 
 fn documents(yaml: &MultiDoc) -> Vec<Value> {
@@ -52,14 +48,7 @@ pub fn read_patch_file(path: &Path) -> anyhow::Result<PatchFile> {
     sliplib_config::router::validate(&router)
         .map_err(|e| anyhow::anyhow!("invalid \"router\" config: {e}"))?;
 
-    let credentials_content = segment_content(&docs, "mikrotik")?;
-    let credentials = credentials::parse_from_yaml(&credentials_content)?;
-
-    Ok(PatchFile {
-        awg,
-        router,
-        credentials,
-    })
+    Ok(PatchFile { awg, router })
 }
 
 #[cfg(test)]
@@ -71,6 +60,7 @@ mod tests {
     const MIKROTIK_DOC: &str = "apiVersion: v1alpha1\nkind: ExtensionServiceConfig\nname: mikrotik\nconfigFiles:\n  - mountPath: /etc/talos-extensions/mikrotik.yaml\n    content: |\n      host: router1.example.com\n      port: 8729\n      username: ansible\n      password: hunter2\n";
     const FOREIGN_DOC: &str = "machine:\n  install:\n    disk: /dev/vda\n";
 
+    /// What taloscfg still writes for the router: the `mikrotik` document passes through, unread.
     fn full_file() -> String {
         [AWG_DOC, ROUTER_DOC, MIKROTIK_DOC].join("---\n")
     }
@@ -84,7 +74,6 @@ mod tests {
 
         let patch = read_patch_file(&path).unwrap();
         assert_eq!(patch.router.bgp_as, 64512);
-        assert_eq!(patch.credentials.host, "router1.example.com");
         assert!(patch.awg.interfaces.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -101,12 +90,8 @@ mod tests {
     }
 
     #[test]
-    fn each_of_the_three_documents_is_required() {
-        for (name, others) in [
-            ("awg", [ROUTER_DOC, MIKROTIK_DOC]),
-            ("router", [AWG_DOC, MIKROTIK_DOC]),
-            ("mikrotik", [AWG_DOC, ROUTER_DOC]),
-        ] {
+    fn each_of_the_two_documents_is_required() {
+        for (name, others) in [("awg", [ROUTER_DOC]), ("router", [AWG_DOC])] {
             let docs = documents(&MultiDoc::parse(&others.join("---\n")).unwrap());
             assert!(segment_content(&docs, name).is_err(), "{name}");
         }
@@ -118,7 +103,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("router1.yaml");
         let broken = ROUTER_DOC.replace("name: router", "name: [router");
-        std::fs::write(&path, [AWG_DOC, &broken, MIKROTIK_DOC].join("---\n")).unwrap();
+        std::fs::write(&path, [AWG_DOC, &broken].join("---\n")).unwrap();
 
         let err = read_patch_file(&path).err().unwrap().to_string();
         std::fs::remove_dir_all(&dir).unwrap();

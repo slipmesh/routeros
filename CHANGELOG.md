@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [1.15.0-beta.0+sm.2] - 2026-11-15
+
+### Added ✨
+
+- Take the router's credentials from the environment (#56)
+- Read slipmesh.yaml instead of the patch file (#61)
+
+### Documentation 📚
+
+- Add the code style (#58)
+- Keep comments to what the code cannot say (#60)
+
+### Tests ✅
+
+- Pin the flag decision that keeps a check run from applying (#57)
+
 ## [1.15.0-beta.0+sm.1] - 2026-11-12
 
 ### Added ✨

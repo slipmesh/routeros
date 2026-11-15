@@ -1,15 +1,10 @@
 //! Thin RouterOS device shim: TLS connection, and per-table `read_*`/`apply_*` functions whose
 //! types are exactly `diff.rs`'s `Current*`/`Plan<Desired*>`: I/O stays thin here so the pure
-//! layer can carry the tests. Row-parsing sub-pieces are still plain functions with their own unit
-//! tests; the actual socket I/O is verified manually against a real device instead, since no
-//! mocking framework exists anywhere in this ecosystem.
+//! layer can carry the tests. The socket I/O is checked only against a live device.
 //!
-//! **Attribute-name/schema assumptions below are ported from the ansible `mesh`/`router` roles'
-//! own RouterOS API usage and MikroTik's documented API property names, not independently
-//! verified against a live device. Verify them on real hardware before trusting this in
-//! production,
-//! particularly `/interface/wireguard/peers`' `comment` field (used here as the peer-label
-//! attribute, since that table has no dedicated `name` property).**
+//! Attribute names are the ones the RouterOS API is called with here; the few not confirmed on a
+//! device say so where they are read or written. A WireGuard peer's label is kept in its
+//! `comment`.
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
@@ -83,9 +78,8 @@ fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>
 }
 
 /// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
-/// never `tls_insecure()`. Panics only via `expect` on a missing crypto provider,
-/// matching `mikrotik-rs`'s own documented requirement that the application install one before
-/// any `tls_config()` call - `run.rs`/`main.rs` does this once at startup.
+/// never `tls_insecure()`. `rustls::ClientConfig::builder()` takes the process-default crypto
+/// provider, which `run` installs once at startup.
 pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice> {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
@@ -611,8 +605,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
         address: get_required(row, "address", &id)?.to_string(),
         interface: get_required(row, "interface", &id)?.to_string(),
         // Assumed boolean-flag-shaped exactly like `disabled` (explicit "true"/"false" on read,
-        // "yes"/"no" accepted on write) - not independently verified, same caveat as this
-        // module's other unverified property names (see the module doc comment).
+        // "yes"/"no" accepted on write) - not confirmed on a device.
         advertise: get_bool_flag(row, "advertise"),
         auto_link_local: get_bool_flag(row, "auto-link-local"),
         disabled: get_bool_flag(row, "disabled"),
@@ -631,8 +624,8 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 /// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - once a second mesh link
 ///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
 ///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
-///   all of them. `config::desired_state` now applies the address explicitly
-///   (from `awg.interfaces[].addresses`, the same value `slipmesh-taloscfg generate` already computed), with
+///   all of them. `config::desired_state` applies the address explicitly
+///   (from `awg.interfaces[].addresses`), with
 ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
 ///   see `config::own_ipv6_address`.
 /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
@@ -1124,9 +1117,8 @@ fn parse_bgp_connection(row: &Row) -> anyhow::Result<CurrentBgpConnection> {
             .unwrap_or_default()
             .parse()
             .unwrap_or(Ipv6Addr::UNSPECIFIED),
-        // `multihop`/`afi` are top-level connection properties, not nested under
-        // `local.`/`remote.`/`output.`, not nested - not independently verified against a live
-        // device.
+        // `multihop`/`afi` are top-level connection properties, not under
+        // `local.`/`remote.`/`output.` - not confirmed on a device.
         multihop: get_bool_flag(row, "multihop"),
         afi: get(row, "afi").unwrap_or_default().to_string(),
         output_network: get(row, "output.network").unwrap_or_default().to_string(),

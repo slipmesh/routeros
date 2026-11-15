@@ -32,5 +32,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# sliplib and talos-extensions are ours and come from release tags, not crates.io.
+# sliplib is ours and comes from release tags, not crates.io.
 allow-org = { github = ["slipmesh"] }

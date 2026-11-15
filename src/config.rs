@@ -1,8 +1,5 @@
-//! Pure "compute what this RouterOS device should look like" logic - translates the
-//! `talos-extensions` `AwgConfig`/`RouterConfig` (already fully resolved by `slipmesh-taloscfg generate` from
-//! `slipmesh.yaml`) into RouterOS's own tables. The RouterOS analogue of what `awg`'s own netlink
-//! converger and `router::bird::render` do for a Linux node, just targeting the RouterOS API
-//! instead of the kernel/a BIRD config file. Touches neither `patch::read_patch_file` nor
+//! Pure "compute what this RouterOS device should look like" logic - translates the node's
+//! `AwgConfig`/`RouterConfig` into RouterOS's own tables. Touches neither the `patch` reader nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
 use crate::diff::{
@@ -54,8 +51,8 @@ pub struct DesiredState {
 }
 
 /// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (enforced by
-/// `sliplib_config::router::validate`, already run in `patch::read_patch_file`) - pulls both out by family.
-/// Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
+/// `sliplib_config::router::validate`, already run in `patch::read_patch_file`) - pulls both out by
+/// family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
 ///
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
 /// the interface; left at the default `yes`, the generated one comes back next to it on every boot
@@ -92,10 +89,9 @@ fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> 
     ))
 }
 
-/// Only the suffix-`*` grammar `slipmesh.yaml`/`render.rs` actually produce (`"mesh-*"`) - sufficient
-/// for `ospf_interfaces`/`direct_interfaces`, both fed straight into BIRD's own glob-capable
-/// `interface` clause on Linux nodes. RouterOS has no equivalent daemon-level pattern engine to
-/// lean on, so this tool matches locally instead.
+/// Only the suffix-`*` grammar the node's configs use (`"mesh-*"`), enough for `ospf_interfaces`
+/// and `direct_interfaces`: RouterOS has no pattern engine to hand them to, so this tool matches
+/// locally.
 fn glob_match(pattern: &str, name: &str) -> bool {
     match pattern.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),
@@ -140,18 +136,11 @@ pub fn desired_state(
             interface: iface.name.clone(),
             disabled: false,
         });
-        // `iface.addresses` is whatever `slipmesh-taloscfg generate` already computed for the Linux side,
-        // reused verbatim (same per-node link-local convention as the loopback bridge's own
-        // address; see `router::config`'s addressing doc comments) - applying it explicitly here
-        // rather than relying on RouterOS's own auto-generation, which isn't reliable for a
-        // WireGuard interface: with a single mesh interface it is fine, but once a second one
-        // exists auto-generation produces the *identical* address on every interface, and
-        // RouterOS's own duplicate address detection marks every one past the first `invalid`. Can carry more than one IPv6 entry now (`cluster.tunnel_networks.ipv6`, a
-        // second, deliberately still link-local-scoped address - see `mesh_config::ClusterConfig::
-        // tunnel_networks`'s doc comment) alongside a v4 one (`cluster.tunnel_networks.ipv4`) -
-        // that v4 entry is the actual fix `tunnel_networks` exists for: a mesh-* interface
-        // otherwise carries no IPv4 address at all, so NAT/MASQUERADE has nothing valid to pick as
-        // a source when `service_subnet` traffic egresses via one.
+        // `iface.addresses` is applied verbatim rather than left to RouterOS's own link-local
+        // generation: with a second mesh interface, generation gives every interface the identical
+        // address, and duplicate address detection marks every one past the first `invalid`. With
+        // `cluster.tunnel_networks` the link-local is the tunnel one, and an IPv4 address comes
+        // with it, without which masquerade has no source address on a mesh interface.
         for addr in &iface.addresses {
             if addr.contains(':') {
                 mesh_link_locals.push(own_ipv6_address(addr, &iface.name)?);
@@ -276,10 +265,9 @@ pub fn desired_state(
 
     // Announce set: physically-connected prefixes on an interface matching `direct_interfaces`,
     // physically-connected prefixes falling inside a `learn` range, and literal `announce` entries
-    // - the same three sources BIRD's own kernel-protocol export filter uses for Linux nodes (see
-    // `router::bird::render`'s doc comment). Own loopback /32 is always announced on top,
-    // independent of these fields - every mesh node's own loopback must stay reachable via RFC
-    // 8950 regardless of what it declares as "directly connected".
+    // - the node's three announcement sources. Own loopback /32 is always announced on top,
+    // independent of these fields - every mesh node's own loopback must stay reachable via RFC 8950
+    // regardless of what it declares as "directly connected".
     let mut bgp_network_addrs: BTreeSet<String> = BTreeSet::new();
     for (iface, prefix) in physically_connected {
         let direct = router
@@ -557,8 +545,7 @@ mod tests {
 
         // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
         // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
-        // entry per mesh interface: the identical literal is applied to both, matching what
-        // slipmesh-taloscfg generate already computes for the Linux side.
+        // entry per mesh interface: the identical literal is applied to both.
         assert_eq!(state.ip_v6_addresses.len(), 4);
         assert!(
             state

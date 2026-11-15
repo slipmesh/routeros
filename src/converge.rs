@@ -7,7 +7,7 @@
 //! 1. `interface list member` stale removal (before any interface is deleted).
 //! 2. `interface wireguard` (exclusive).
 //! 3. `interface bridge` (loopback, singleton) - before its own address can be set.
-//! 4. `ip address` (loopback `/32` - mesh links carry no IPv4 any more, OSPFv3/RFC 8950 underlay).
+//! 4. `ip address` (the loopback `/32`, and a mesh interface's tunnel IPv4 when the config has one).
 //! 5. `ipv6 address` (loopback ULA `/128` and the link-locals - independent of step 4, order
 //!    between the two doesn't matter).
 //! 6. `interface wireguard peers` (exclusive).
@@ -150,7 +150,7 @@ pub async fn run(
     })
     .await?;
 
-    // 4. ip address (loopback /32 - mesh links carry no IPv4 any more).
+    // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
     let mut our_ifaces = desired_ifaces.clone();
     our_ifaces.push(desired.loopback_bridge.name.clone());
     let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;

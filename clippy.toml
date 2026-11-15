@@ -1,10 +1,8 @@
 # Clippy linting configuration for routeros
 # Only non-default options
 
-# desired_state()/converge() take one argument per RouterOS-relevant CRD input - more than the
-# default threshold, same reasoning as slipmesh-operators' own clippy.toml.
 too-many-arguments-threshold = 8
 
-# The 13-step convergence orchestration and desired-state construction have multiple branches per
-# RouterOS table - may exceed the default threshold.
+# `converge::run` applies the tables in fourteen steps in one function, and `config::desired_state`
+# builds them in one, each with branches per table.
 cognitive-complexity-threshold = 50

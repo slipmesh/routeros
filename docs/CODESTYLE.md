@@ -15,7 +15,9 @@
 - One binary crate. Every module but `main.rs` opens with a `//!` comment saying its role.
 - The logic that decides anything is in modules that take and return plain values: `config` (what
   the device should look like), `diff` (the plan per table), `sanitize`, `cli`, and
-  `credentials::from_lookup`; `credentials::from_env` hands it the process environment.
+  `credentials::from_lookup`; `credentials::from_env` hands it the process environment. The
+  exceptions are `mikrotik`'s row parsing, which decides what a row read from the device means,
+  and `converge`'s report, which counts the plan and records its lines.
 - I/O stays in thin shims whose inputs and outputs are exactly what those modules take and give:
   `mikrotik` talks to the device, `patch` reads the file, `run` is the pipeline of one run and
   `converge` the order the tables are applied in.
@@ -26,8 +28,8 @@
 
 - The router's credentials come from the environment, never from a command-line flag, where a
   process listing would show them.
-- The peer endpoint host, the one free-form string that reaches a RouterOS command attribute,
-  passes the allow-list in `sanitize` first; names and lists rely on the config's own validation.
+- The peer endpoint host is the one string allow-listed by `sanitize` before it reaches a RouterOS
+  command attribute; names reach the device as the config's own checks leave them.
 - A `--check` run does every read and every diff; only the writes are gated on it.
 
 ## Naming
@@ -45,7 +47,7 @@
   An error stops the run; tables already applied by then stay applied, since each table is written
   as it is reached.
 - A new error names what it is about - the file, the variable, the node, the table row; errors
-  from the device today carry no table or row. Most are built with `anyhow!`/`ensure!`, a source
+  from the device today name at most the row's id, never the table. Most are built with `anyhow!`/`ensure!`, a source
   error added as text (`map_err(|e| anyhow!("…: {e}"))`); some add it as a cause with
   `.context(...)`.
 - Three things are skipped without stopping the run: a value read back from the device that is
@@ -57,7 +59,7 @@
 ## Tests
 
 - Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most; in
-  `diff.rs` one named module per table and three shared ones (`plan_tests`, `singleton_tests`,
+  `diff.rs` one named module per keyed table and three shared ones (`plan_tests`, `singleton_tests`,
   `passive_flag_tests`); `validate_endpoint_tests` in `sanitize.rs`.
   `tests/cli.rs` runs the binary as a caller does.
 - A test pins behaviour of this repository's code, not another crate's or anything that holds by
@@ -66,9 +68,9 @@
   them the operating system's text for a missing file.
 - WireGuard keys in fixtures come from `test_support`, addresses and names from the documentation
   ranges; nothing is taken from a live config.
-- `cargo mutants` runs on changed code; what it may skip is listed with the reason in
-  [`.cargo/mutants.toml`](../.cargo/mutants.toml). The device shims in `mikrotik` and `converge`
-  have no unit tests yet.
+- Before a pull request, run `cargo mutants` on the changed code; what it may skip is listed with
+  the reason in [`.cargo/mutants.toml`](../.cargo/mutants.toml). The device shims in `mikrotik`,
+  `converge` and `run` have no unit tests yet.
 
 ## Comments
 

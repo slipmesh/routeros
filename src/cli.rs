@@ -29,3 +29,27 @@ pub struct Cli {
     #[arg(long)]
     pub diff: bool,
 }
+
+impl Cli {
+    /// Whether this run writes to the device: never under `--check`.
+    pub fn applies(&self) -> bool {
+        !self.check
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> Cli {
+        Cli::try_parse_from([&["slipmesh-routeros", "--node", "router1"], args].concat()).unwrap()
+    }
+
+    #[test]
+    fn a_check_run_never_applies_and_any_other_run_does() {
+        assert!(!parsed(&["--check"]).applies());
+        assert!(!parsed(&["--check", "--diff"]).applies());
+        assert!(parsed(&[]).applies());
+        assert!(parsed(&["--diff"]).applies());
+    }
+}

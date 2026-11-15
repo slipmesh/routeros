@@ -31,5 +31,5 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
     let desired =
         config::desired_state(&patch_file.awg, &patch_file.router, &physically_connected)?;
 
-    converge::run(&device, &desired, !cli.check).await
+    converge::run(&device, &desired, cli.applies()).await
 }

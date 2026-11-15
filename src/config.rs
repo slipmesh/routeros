@@ -1,5 +1,5 @@
 //! Pure "compute what this RouterOS device should look like" logic - translates the node's
-//! `AwgConfig`/`RouterConfig` into RouterOS's own tables. Touches neither the file nor
+//! `AwgConfig`/`RouterConfig` into RouterOS's own tables. Touches neither the `patch` reader nor
 //! `mikrotik_rs`: I/O stays in thin shims, the logic that decides anything stays here.
 
 use crate::diff::{

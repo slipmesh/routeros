@@ -1,9 +1,9 @@
-//! Allow-list validation for the one free-form string of the node's configs that reaches a
-//! RouterOS command attribute: a WireGuard peer's `endpoint` host. `mikrotik-rs`'s `CommandBuilder`
-//! sends each attribute as its own length-prefixed API word, so no separator can break out of it,
-//! but a malformed value still makes a confusing or rejected command on the device. Interface and
-//! BGP connection names (`InterfaceEntry::name`, `BgpPeerEntry::name`) rely on the config's own
-//! validation.
+//! Allow-list validation of a WireGuard peer's `endpoint` host before it reaches a RouterOS command
+//! attribute. `mikrotik-rs`'s `CommandBuilder` sends each attribute as its own length-prefixed API
+//! word, so no separator can break out of it, but a malformed value still makes a confusing or
+//! rejected command on the device. Interface and BGP connection names (`InterfaceEntry::name`,
+//! `BgpPeerEntry::name`) reach the device as the config's checks leave them: non-empty, unique, an
+//! interface name within 15 bytes.
 
 /// The host part of a `PeerEntry::endpoint` (`"host:port"`, port already split off
 /// by `config::parse_endpoint`), used directly as a RouterOS `endpoint-address`. Allows what a

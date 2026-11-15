@@ -75,6 +75,8 @@ every pull request.
 
 ## Development
 
+The code follows [docs/CODESTYLE.md](docs/CODESTYLE.md).
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings

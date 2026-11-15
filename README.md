@@ -19,12 +19,8 @@ slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]
 
 - `--node` - the device's node in `slipmesh.yaml`.
 - `--config` - `slipmesh.yaml` as plain text, `slipmesh.yaml` in the current directory by default.
-  The tool knows nothing of encryption: a SOPS-encrypted file is decrypted by a wrapper that passes
-  the plaintext path:
-
-  ```sh
-  sops exec-file slipmesh.yaml 'slipmesh-routeros --node router1 --check --config {}'
-  ```
+  The tool reads plaintext and knows nothing of encryption: whoever keeps the file encrypted
+  decrypts it for the run and passes the plaintext path as `--config`.
 
 - `--check` - compute the diff but don't apply it to the device.
 - `--diff` - print the computed add/update/remove plan to stdout (works with or without `--check`).
@@ -58,8 +54,8 @@ Requires:
 - `--patches-dir` is gone: pass `--config` with the path of `slipmesh.yaml` instead.
 - The tool now reads the whole decrypted `slipmesh.yaml`, which holds every node's and every
   pool's private key; the patch file held only this router's key and its peers' public keys.
-  Keep the plaintext where the encrypted file is kept, or let the wrapper above decrypt it for one
-  run.
+  The plaintext should exist only for the run: decrypt it for that run and remove it after, never
+  keep a plaintext copy beside the encrypted file.
 - The file must already hold the secrets: run `slipmesh-taloscfg generate` once first, so that
   every key and obfuscation is written into it.
 

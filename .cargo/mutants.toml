@@ -1,16 +1,3 @@
-# What talks to the device, the terminal or the environment is exercised only against a live device
-# and a real terminal: no unit test can tell a call to it from none, so its mutants would only ever
-# be missed. The row parsing and the plans these shims carry are tested on their own.
-exclude_re = [
-    # Writes to the device.
-    "src/mikrotik.rs:.*replace apply_",
-    # The API calls under every read and write, and the reads of each table.
-    "src/mikrotik.rs:.*replace (execute|print|add|set|remove) ->",
-    "src/mikrotik.rs:.*\\bread_[a-z0-9_]+\\b",
-    # One run against the device: the pipeline and the table order.
-    "src/converge.rs:.*replace run ->",
-    "src/converge.rs:.* in run$",
-    "src/run.rs:.* in run$",
-    # Colour only on a terminal without NO_COLOR.
-    "src/main.rs:.*use_color",
-]
+# Applying a plan to the device is a thin shim over the RouterOS API that only a live device
+# exercises (see `src/mikrotik.rs`): no unit test can tell a call to it from none.
+exclude_re = ["src/mikrotik.rs:.*replace apply_"]

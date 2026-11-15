@@ -26,8 +26,8 @@
 
 - The router's credentials come from the environment, never from a command-line flag, where a
   process listing would show them.
-- Every string that reaches a RouterOS command attribute passes the allow-list in `sanitize`
-  first.
+- The peer endpoint host, the one free-form string that reaches a RouterOS command attribute,
+  passes the allow-list in `sanitize` first; names and lists rely on the config's own validation.
 - A `--check` run does every read and every diff; only the writes are gated on it.
 
 ## Naming
@@ -40,35 +40,39 @@
 ## Error handling
 
 - `anyhow::Result` throughout: this is a binary, and the error ends as one logged chain.
-- The file and the credentials are checked before the device is connected to. An error stops the
-  run; tables already applied by then stay applied, since each table is written as it is reached.
-- An error names what it is about - the file, the variable, the node, the table row. Most are
-  built with `anyhow!`/`ensure!`, a source error added as text (`map_err(|e| anyhow!("…: {e}"))`);
-  some add it as a cause with `.context(...)`.
-- A value read back from the device that is missing or does not parse falls back to its default
-  in a few places, and `config` skips a `learn` range it cannot parse with a warning; neither
-  stops the run.
+- The file is parsed and the credentials read before the device is connected to;
+  `config::desired_state`'s checks run after the first read from the device and before any write.
+  An error stops the run; tables already applied by then stay applied, since each table is written
+  as it is reached.
+- A new error names what it is about - the file, the variable, the node, the table row; errors
+  from the device today carry no table or row. Most are built with `anyhow!`/`ensure!`, a source
+  error added as text (`map_err(|e| anyhow!("…: {e}"))`); some add it as a cause with
+  `.context(...)`.
+- Three things are skipped without stopping the run: a value read back from the device that is
+  missing or does not parse falls back to its default in a few places, `config` skips a `learn`
+  range it cannot parse, and `mikrotik` skips a physically-connected address it cannot parse, the
+  last two with a warning.
 - `unwrap`/`expect` only in tests.
 
 ## Tests
 
-- Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most,
-  one named module per table in `diff.rs` and `validate_endpoint_tests` in `sanitize.rs`.
+- Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most; in
+  `diff.rs` one named module per table and three shared ones (`plan_tests`, `singleton_tests`,
+  `passive_flag_tests`); `validate_endpoint_tests` in `sanitize.rs`.
   `tests/cli.rs` runs the binary as a caller does.
 - A test pins behaviour of this repository's code, not another crate's or anything that holds by
   construction. A unit test pins what an error names, not its wording; `tests/cli.rs` pins the log
-  lines a caller sees, wording included, since that output is the binary's interface.
-- Keys in fixtures come from `test_support`, addresses and names from the documentation ranges;
-  nothing is taken from a live config.
-- The code that talks to the device (`mikrotik`'s reads and writes, `converge::run`, `run`) and
-  `main`'s terminal detection are exercised only against a live device or terminal; `cargo
-  mutants` skips them, as [`.cargo/mutants.toml`](../.cargo/mutants.toml) lists with the reason.
-  Everything else is held to no viable mutant missed; the survivors it still has in `diff`,
-  `config`, `converge`'s report and `apply_singleton`, and `mikrotik`'s row parsing are gaps to
-  close, not exceptions.
+  lines a caller sees, wording included, since that output is the binary's interface - and with
+  them the operating system's text for a missing file.
+- WireGuard keys in fixtures come from `test_support`, addresses and names from the documentation
+  ranges; nothing is taken from a live config.
+- `cargo mutants` runs on changed code; what it may skip is listed with the reason in
+  [`.cargo/mutants.toml`](../.cargo/mutants.toml). The device shims in `mikrotik` and `converge`
+  have no unit tests yet.
 
 ## Comments
 
-Code says what it does; a comment says only why it has to be that way - an external constraint or
-a non-obvious consequence, including how RouterOS or the device's API behaves. No history of how
-the code got here, and no pointers to files or functions in other repositories.
+A new or changed comment says only why the code has to be that way - an external constraint or a
+non-obvious consequence, including how RouterOS or the device's API behaves - and tells no history
+of how the code got here and points at no file or function in another repository; the code says
+what it does.

@@ -46,6 +46,9 @@ filter_unconventional = true
 tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+(-[a-z0-9]+)?"
 
 commit_parsers = [
+  # Ahead of the type parsers, since the first match wins; the comment sorts the group first and
+  # the heading strips it.
+  { field = "breaking", pattern = "true", group = "<!-- 0 -->Breaking changes 💥" },
   { message = "^feat", group = "Added ✨" },
   { message = "^fix", group = "Fixed 🐛" },
   { message = "^refactor", group = "Changed 🔧" },

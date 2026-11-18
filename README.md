@@ -72,8 +72,8 @@ A peer the device dials gets a persistent keepalive: the `persistent_keepalive` 
 the node's `awg` config, or 25 seconds when the entry sets none. RouterOS takes one interval, so
 an entry that sets a range is refused, naming the interface.
 
-Before it converges, the tool logs a warning for each of the node's links that `sliplib-mesh` finds
-losing data packets, and goes on.
+Before it converges, the tool logs a warning for each way `sliplib-mesh` finds one of the node's
+links losing data packets, one line each, and goes on.
 
 Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing bfd configuration`,
 `routing ospf interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a

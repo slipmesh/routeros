@@ -19,12 +19,12 @@ path = "src/main.rs"
 [dependencies]
 # Ours, from a release tag: sliplib is not published to crates.io.
 # slipmesh.yaml and a node's configs, computed from it.
-sliplib-config = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8" }
-sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8" }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", rev = "34be4b8" }
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0" }
+sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0" }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0", default-features = false }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0" }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", rev = "6e6c3b0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

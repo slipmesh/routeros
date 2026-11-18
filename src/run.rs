@@ -13,8 +13,11 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .install_default()
         .map_err(|_| anyhow::anyhow!("failed to install default rustls crypto provider"))?;
 
-    let configs = slipmesh::read_node_configs(&cli.config, &cli.node)
+    let (configs, warnings) = slipmesh::read_node_configs(&cli.config, &cli.node)
         .context("failed to read the node's configs")?;
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
 
     let credentials = credentials::from_env()?;
 

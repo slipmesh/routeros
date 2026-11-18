@@ -68,6 +68,9 @@ fourteen tables in a fixed, dependency-correct
 order (`converge.rs`'s module doc comment is the authoritative list). Each is read live from the
 device and diffed against the desired state before anything is written.
 
+Before it converges, the tool logs a warning for each of the node's links that `sliplib-mesh` finds
+losing data packets, and goes on.
+
 Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing bfd configuration`,
 `routing ospf interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a
 moved listen port can't collide with the row it replaces. Tables shared with whatever else the

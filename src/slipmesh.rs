@@ -1,20 +1,28 @@
 //! The node's desired state from `slipmesh.yaml`: its `awg` and `router` configs, computed and
-//! checked by `sliplib-mesh`. The file is read as plain text; decrypting it is the caller's.
+//! checked by `sliplib-mesh`, with what `sliplib-mesh` warns about its links. The file is read as
+//! plain text; decrypting it is the caller's.
 
 use anyhow::Context;
 use sliplib_config::slipmesh_file::SlipmeshFile;
 use sliplib_mesh::render::{NodeConfigs, node_configs};
+use sliplib_mesh::warnings::{Warning, warnings};
 use sliplib_yaml::MultiDoc;
 use std::path::Path;
 
 /// An error reading or parsing the file names the file; one about the node or a secret its configs
 /// need names the node, link or pool.
-pub fn read_node_configs(path: &Path, node: &str) -> anyhow::Result<NodeConfigs> {
+///
+/// The warnings are those about the node's own links: the file is valid with them, and whoever
+/// runs the tool should still hear of them.
+pub fn read_node_configs(path: &Path, node: &str) -> anyhow::Result<(NodeConfigs, Vec<Warning>)> {
     let file = SlipmeshFile::read(&MultiDoc::read(path)?)
         .with_context(|| format!("reading {}", path.display()))?;
     let resolved = sliplib_mesh::secrets::read(file.topology());
     let model = file.effective_for(node)?;
-    Ok(node_configs(&model, node, &resolved)?)
+    let configs = node_configs(&model, node, &resolved)?;
+    let mut warnings = warnings(&model, &resolved);
+    warnings.retain(|warning| warning.concerns(node));
+    Ok((configs, warnings))
 }
 
 #[cfg(test)]
@@ -87,7 +95,8 @@ configFiles:
     fn a_nodes_configs_come_from_slipmesh_yaml() {
         let file = written("configs", &fixture());
         let path = file.path();
-        let configs = read_node_configs(&path, "router1").unwrap();
+        let (configs, warnings) = read_node_configs(&path, "router1").unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(configs.router.bgp_as, 64512);
         assert_eq!(configs.router.direct_interfaces, ["bridge-lan"]);
         let [iface] = configs.awg.interfaces.as_slice() else {
@@ -100,6 +109,36 @@ configFiles:
         assert_eq!(peer.endpoint.as_deref(), Some("192.0.2.10:51820"));
         let a = PrivateKey::from(wg_key("node-a").as_str());
         assert_eq!(peer.public_key, a.public_key().unwrap());
+    }
+
+    #[test]
+    fn the_node_is_warned_about_its_own_links_alone() {
+        let lossy = "obfuscation: {jc: 4, jmin: 10, jmax: 50, s1: 40, s2: 41, h1: 100-199, h2: 6, \
+                     h3: 7, h4: 8, random_trailers: true}";
+        let fixture = fixture()
+            .replace(
+                "  - name: router1\n",
+                &format!(
+                    "  - {{name: node-c, node_id: \"198.51.100.3\", mesh_private_key: \"{}\"}}\n  \
+                     - name: router1\n",
+                    wg_key("node-c")
+                ),
+            )
+            .replace(
+                "    - {pair: [node-a, router1], port: 51820, plain: true}\n",
+                &format!(
+                    "    - {{pair: [node-a, router1], port: 51820, {lossy}}}\n    \
+                     - {{pair: [node-a, node-c], port: 51821, {lossy}}}\n"
+                ),
+            );
+        let file = written("warnings", &fixture);
+        let (_, warnings) = read_node_configs(&file.path(), "router1").unwrap();
+        let told: Vec<String> = warnings.iter().map(ToString::to_string).collect();
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(
+            told[0].starts_with("mesh link node-a-router1: "),
+            "{told:?}"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release-pr:
-    uses: slipmesh/.github/.github/workflows/release-pr.yml@v4.0.0
+    uses: slipmesh/.github/.github/workflows/release-pr.yml@v4.0.1
     permissions:
       contents: read
     with:

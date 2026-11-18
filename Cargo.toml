@@ -9,6 +9,8 @@ authors = ["slipmesh"]
 license = "AGPL-3.0-only"
 description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by slipmesh-taloscfg from slipmesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
+# Installed from a release or by git tag, never from crates.io.
+publish = false
 
 [[bin]]
 name = "slipmesh-routeros"

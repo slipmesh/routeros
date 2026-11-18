@@ -751,8 +751,8 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sliplib-config"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "anyhow",
  "serde",
@@ -763,8 +763,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-mesh"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "anyhow",
  "sliplib-config",
@@ -774,24 +774,24 @@ dependencies = [
 
 [[package]]
 name = "sliplib-net"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -802,8 +802,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-yaml"
-version = "0.14.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.14.0#5e03e4945c1f8eaafcf7969c7a3a2e42a89e5ffb"
+version = "0.17.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.17.0#78958c67aa53baa89b771244cfb95bc632d7039b"
 dependencies = [
  "anyhow",
  "atomic-write-file",

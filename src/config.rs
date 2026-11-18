@@ -409,7 +409,6 @@ mod tests {
             name: None,
             endpoint: endpoint.map(str::to_string),
             allowed_ips: None,
-            advanced_security: false,
         }
     }
 

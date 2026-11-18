@@ -9,7 +9,7 @@ use crate::diff::{
     DesiredWireguardPeer,
 };
 use crate::sanitize::validate_endpoint;
-use sliplib_config::awg::AwgConfig;
+use sliplib_config::awg::{AwgConfig, PLAIN_KEEPALIVE, PeerEntry};
 use sliplib_config::router::RouterConfig;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -23,13 +23,25 @@ pub const OSPF_INSTANCE: &str = "default";
 pub const OSPF_AREA: &str = "backbone";
 pub const BGP_INSTANCE: &str = "default";
 pub const BGP_NETWORKS_LIST: &str = "bgp-networks";
-const MESH_PERSISTENT_KEEPALIVE: u16 = 25;
 const OSPF_PEER_COST: u16 = 10;
 const OSPF_HELLO_INTERVAL: &str = "10s";
 const OSPF_DEAD_INTERVAL: &str = "40s";
 /// RouterOS 7.20+'s explicit AFI selector for a BGP connection - without it, a session negotiates
 /// `afi=ipv6` only and a peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
 const BGP_AFI_IPV4: &str = "ip";
+
+/// The keepalive of a peer the device dials: the one its entry sets, else that of plain
+/// WireGuard, which is all RouterOS speaks whatever the interface's entry sets. RouterOS takes one
+/// interval, so a range is refused.
+fn keepalive_seconds(interface: &str, peer: &PeerEntry) -> anyhow::Result<u16> {
+    let interval = peer.persistent_keepalive.unwrap_or(PLAIN_KEEPALIVE);
+    anyhow::ensure!(
+        interval.lo() == interval.hi(),
+        "interface {interface:?}: persistent_keepalive {interval} is a range, and RouterOS takes \
+         one number of seconds"
+    );
+    Ok(interval.lo())
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredState {
@@ -156,7 +168,8 @@ pub fn desired_state(
             let (endpoint_address, endpoint_port, persistent_keepalive) = match &peer.endpoint {
                 Some(endpoint) => {
                     let (host, port) = parse_endpoint(endpoint)?;
-                    (Some(host), Some(port), Some(MESH_PERSISTENT_KEEPALIVE))
+                    let keepalive = keepalive_seconds(&iface.name, peer)?;
+                    (Some(host), Some(port), Some(keepalive))
                 }
                 // NAT'd peer with no reachable endpoint: no Endpoint/PersistentKeepalive, wait for
                 // it to initiate the handshake and roam in.
@@ -370,6 +383,7 @@ fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
     use crate::test_support::wg_key;
+    use sliplib_config::Range;
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
 
@@ -626,6 +640,33 @@ mod tests {
         // The v6 entry still goes to ip_v6_addresses, not ip_addresses - loopback /128, the
         // loopback bridge's copy of the link-local, and the mesh interface's own.
         assert_eq!(state.ip_v6_addresses.len(), 3);
+    }
+
+    fn keepalive_of_a_dialed_peer(set: Range<u16>) -> anyhow::Result<Option<u16>> {
+        let mut i = iface("mesh-2", 51820);
+        i.peers.push(PeerEntry {
+            persistent_keepalive: Some(set),
+            ..peer("east-pub", Some("192.0.2.2:51820"))
+        });
+        let awg = AwgConfig {
+            interfaces: vec![i],
+            ..Default::default()
+        };
+        Ok(desired_state(&awg, &router_config(), &[])?.wireguard_peers[0].persistent_keepalive)
+    }
+
+    #[test]
+    fn a_dialed_peer_takes_the_keepalive_its_entry_sets() {
+        assert_eq!(keepalive_of_a_dialed_peer(10.into()).unwrap(), Some(10));
+        assert_eq!(keepalive_of_a_dialed_peer(0.into()).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_keepalive_written_as_a_range_is_refused_naming_the_interface() {
+        let err = keepalive_of_a_dialed_peer(Range::new(20, 30).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mesh-2") && err.contains("20-30"), "{err}");
     }
 
     #[test]

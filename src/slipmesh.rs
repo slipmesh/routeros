@@ -14,7 +14,7 @@ pub fn read_node_configs(path: &Path, node: &str) -> anyhow::Result<NodeConfigs>
         .with_context(|| format!("reading {}", path.display()))?;
     let resolved = sliplib_mesh::secrets::read(file.topology());
     let model = file.effective_for(node)?;
-    node_configs(&model, node, &resolved)
+    Ok(node_configs(&model, node, &resolved)?)
 }
 
 #[cfg(test)]

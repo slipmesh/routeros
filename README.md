@@ -68,6 +68,12 @@ fourteen tables in a fixed, dependency-correct
 order (`converge.rs`'s module doc comment is the authoritative list). Each is read live from the
 device and diffed against the desired state before anything is written.
 
+A peer the device dials gets a persistent keepalive: the `persistent_keepalive` of its entry in
+the node's `awg` config, or 25 seconds when the entry sets none, whatever the interface sets of
+the obfuscation; `0` sends none. RouterOS takes one interval, so an entry that sets a range is
+refused, naming the interface and the peer. A peer the device only waits for is sent none, and
+whatever its entry sets is not read.
+
 Before it converges, the tool logs a warning for each way `sliplib-mesh` finds one of the node's
 links losing data packets, one line each, and goes on.
 

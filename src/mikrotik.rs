@@ -282,7 +282,9 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
         endpoint_address: get(row, "endpoint-address").map(str::to_string),
         // A cleared port reads back as `0`, see `peer_port_and_keepalive`.
         endpoint_port: get_opt_u16(row, "endpoint-port")?.filter(|&p| p != 0),
-        persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?,
+        // A keepalive that sends none reads back as `0`, as one never set does.
+        persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?
+            .filter(|&seconds| seconds != 0),
         disabled: get_bool_flag(row, "disabled"),
         id,
     })
@@ -1430,6 +1432,22 @@ mod tests {
             ("endpoint-port", "0"),
         ]);
         assert_eq!(parse_wireguard_peer(&r).unwrap().endpoint_port, None);
+    }
+
+    #[test]
+    fn a_keepalive_of_zero_reads_back_as_none() {
+        for written in ["0", "0s"] {
+            let r = row(&[
+                (".id", "*1"),
+                ("interface", "mesh-a"),
+                ("persistent-keepalive", written),
+            ]);
+            assert_eq!(
+                parse_wireguard_peer(&r).unwrap().persistent_keepalive,
+                None,
+                "{written}"
+            );
+        }
     }
 
     #[test]

@@ -938,6 +938,28 @@ mod wireguard_peers_tests {
     }
 
     #[test]
+    fn a_peer_held_without_a_keepalive_is_not_set_again_when_none_is_desired() {
+        let mut d = desired("mesh-east", "east", Some("192.0.2.4"));
+        d.persistent_keepalive = None;
+        let held = CurrentWireguardPeer {
+            id: "*1".to_string(),
+            interface: d.interface.clone(),
+            name: d.name.clone(),
+            public_key_b64: d.public_key_b64.clone(),
+            allowed_address: d.allowed_address.clone(),
+            endpoint_address: d.endpoint_address.clone(),
+            endpoint_port: d.endpoint_port,
+            persistent_keepalive: None,
+            disabled: false,
+        };
+        let plan = wireguard_peers(&[held], &[d]);
+        assert!(
+            plan.add.is_empty() && plan.update.is_empty() && plan.remove.is_empty(),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
     fn nat_peer_has_no_endpoint_or_keepalive() {
         let d = desired("mesh-router1", "router1", None);
         assert_eq!(d.endpoint_address, None);

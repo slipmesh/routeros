@@ -387,7 +387,19 @@ pub async fn read_ip_addresses(
     our_interfaces: &[String],
     interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentIpAddress>> {
-    let rows = print(device, IP_ADDRESS_PATH).await?;
+    our_ip_addresses(
+        &print(device, IP_ADDRESS_PATH).await?,
+        our_interfaces,
+        interface_prefix,
+    )
+}
+
+/// Those of the `ip address` rows that are this tool's footprint.
+fn our_ip_addresses(
+    rows: &[Row],
+    our_interfaces: &[String],
+    interface_prefix: &str,
+) -> anyhow::Result<Vec<CurrentIpAddress>> {
     rows.iter()
         .map(parse_ip_address)
         .filter(|r| match r {
@@ -501,7 +513,19 @@ pub async fn read_list_members(
     desired_interfaces: &[String],
     interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentListMember>> {
-    let rows = print(device, LIST_MEMBER_PATH).await?;
+    our_list_members(
+        &print(device, LIST_MEMBER_PATH).await?,
+        desired_interfaces,
+        interface_prefix,
+    )
+}
+
+/// Those of the `interface list member` rows that are this tool's footprint.
+fn our_list_members(
+    rows: &[Row],
+    desired_interfaces: &[String],
+    interface_prefix: &str,
+) -> anyhow::Result<Vec<CurrentListMember>> {
     rows.iter()
         .map(parse_list_member)
         .filter(|r| match r {
@@ -646,7 +670,19 @@ pub async fn read_ipv6_addresses(
     our_interfaces: &[String],
     interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    let rows = print(device, IPV6_ADDRESS_PATH).await?;
+    our_ipv6_addresses(
+        &print(device, IPV6_ADDRESS_PATH).await?,
+        our_interfaces,
+        interface_prefix,
+    )
+}
+
+/// Those of the `ipv6 address` rows that are this tool's footprint.
+fn our_ipv6_addresses(
+    rows: &[Row],
+    our_interfaces: &[String],
+    interface_prefix: &str,
+) -> anyhow::Result<Vec<CurrentIpv6Address>> {
     rows.iter()
         .map(parse_ipv6_address)
         .filter(|r| match r {
@@ -1469,5 +1505,65 @@ mod tests {
             "=numbers=*1"
         ));
         assert!(sends_word(cmd, "=value-name=passive"));
+    }
+
+    /// Address rows on an interface of a link under the prefix `wg-`, on one the tool asks for by
+    /// name, on one that is nobody's of ours, on one named by the default prefix, and on the raw
+    /// id a deleted interface leaves behind.
+    fn rows_on_interfaces() -> Vec<Row> {
+        ["wg-east", "router-lo", "ether1", "mesh-east", "*16"]
+            .iter()
+            .zip(1..)
+            .map(|(interface, id)| {
+                row(&[
+                    (".id", &format!("*{id}")),
+                    ("address", "192.0.2.1/32"),
+                    ("interface", interface),
+                    ("list", crate::config::LAN_LIST),
+                ])
+            })
+            .collect()
+    }
+
+    fn asked_for() -> Vec<String> {
+        vec!["router-lo".to_owned()]
+    }
+
+    const OURS: [&str; 3] = ["wg-east", "router-lo", "*16"];
+
+    #[test]
+    fn the_ip_addresses_read_are_those_on_this_tools_interfaces() {
+        let read = our_ip_addresses(&rows_on_interfaces(), &asked_for(), "wg-").unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn the_ipv6_addresses_read_are_those_on_this_tools_interfaces() {
+        let read = our_ipv6_addresses(&rows_on_interfaces(), &asked_for(), "wg-").unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn the_list_members_read_are_those_of_the_lan_list_on_this_tools_interfaces() {
+        let mut rows = rows_on_interfaces();
+        // On an interface of ours, in a list that is not.
+        rows.push(row(&[
+            (".id", "*9"),
+            ("interface", "wg-west"),
+            ("list", "WAN"),
+        ]));
+        let read = our_list_members(&rows, &asked_for(), "wg-").unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|m| m.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn a_row_that_does_not_parse_is_an_error_and_not_passed_over() {
+        let unparsed = vec![row(&[(".id", "*1")])];
+        assert!(our_ip_addresses(&unparsed, &[], "wg-").is_err());
+        assert!(our_ipv6_addresses(&unparsed, &[], "wg-").is_err());
+        assert!(our_list_members(&unparsed, &[], "wg-").is_err());
     }
 }

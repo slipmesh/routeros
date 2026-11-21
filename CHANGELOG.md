@@ -5,9 +5,33 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
-## [1.15.0-beta.0+sm.2] - 2026-11-15
+## [1.15.0-beta.0+sm.3] - 2026-11-21
 
 ### Added ✨
+
+- Warn about a link of the node that loses data packets to random trailers (#72)
+- Take a dialed peer's keepalive from its config entry (#73)
+
+### Build system 🛠️
+
+- Update sliplib to v0.17.0 (main) (#59)
+- Update rust crate clap to 4.6.8 (main) (#64)
+- Take sliplib 0.18.0 (#70)
+- Raise the minor version for a breaking change before 1.0 (#74)
+- Update rust crate clap to 4.6.9 (main) (#77)
+
+### CI/CD ⚙️
+
+- Open the release PR as the organisation's ci app (#67)
+- Move the shared workflows to v4.0.2 (#75)
+
+### Miscellaneous 🧹
+
+- Put breaking changes in a changelog section of their own (#63)
+
+## [1.15.0-beta.0+sm.2] - 2026-11-15
+
+### Breaking changes 💥
 
 - Take the router's credentials from the environment (#56)
 - Read slipmesh.yaml instead of the patch file (#61)

@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "routeros"
-version = "1.15.0-beta.0+sm.2"
+version = "1.15.0-beta.0+sm.3"
 dependencies = [
  "anyhow",
  "clap",

@@ -461,9 +461,16 @@ pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
-    let rows = print(device, IP_ADDRESS_PATH).await?;
+    physically_connected(&print(device, IP_ADDRESS_PATH).await?, loopback_bridge)
+}
+
+/// The physically-connected subnets the `ip address` rows give, each by its interface.
+fn physically_connected(
+    rows: &[Row],
+    loopback_bridge: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
     let mut prefixes = Vec::new();
-    for row in &rows {
+    for row in rows {
         let a = parse_ip_address(row)?;
         // Unlike read_ip_addresses's footprint check, `mesh-*` interfaces are **not** excluded
         // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
@@ -1565,5 +1572,35 @@ mod tests {
         assert!(our_ip_addresses(&unparsed, &[], "wg-").is_err());
         assert!(our_ipv6_addresses(&unparsed, &[], "wg-").is_err());
         assert!(our_list_members(&unparsed, &[], "wg-").is_err());
+    }
+
+    #[test]
+    fn the_physically_connected_subnets_are_every_address_but_the_loopbacks_and_an_orphans() {
+        let rows: Vec<Row> = [
+            ("ether1", "203.0.113.1/27"),
+            ("wg-east", "198.51.100.129/32"),
+            ("router-lo", "198.51.100.2/32"),
+            ("*16", "203.0.113.33/27"),
+            ("ether2", "not an address"),
+        ]
+        .iter()
+        .zip(1..)
+        .map(|((interface, address), id)| {
+            row(&[
+                (".id", &format!("*{id}")),
+                ("address", address),
+                ("interface", interface),
+            ])
+        })
+        .collect();
+        let connected = physically_connected(&rows, "router-lo").unwrap();
+        assert_eq!(
+            connected,
+            [
+                ("ether1".to_owned(), "203.0.113.0/27".to_owned()),
+                ("wg-east".to_owned(), "198.51.100.129/32".to_owned()),
+            ]
+        );
+        assert!(physically_connected(&[row(&[(".id", "*1")])], "router-lo").is_err());
     }
 }

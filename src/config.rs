@@ -154,8 +154,8 @@ pub fn desired_state(
         // `iface.addresses` is applied verbatim rather than left to RouterOS's own link-local
         // generation: with a second mesh interface, generation gives every interface the identical
         // address, and duplicate address detection marks every one past the first `invalid`. With
-        // `cluster.tunnel_networks` the link-local is the tunnel one, and an IPv4 address comes
-        // with it, without which masquerade has no source address on a mesh interface.
+        // `addressing.tunnel.ipv4` an IPv4 address comes with the link-local, without which
+        // masquerade has no source address on a mesh interface.
         for addr in &iface.addresses {
             if addr.contains(':') {
                 mesh_link_locals.push(own_ipv6_address(addr, &iface.name)?);
@@ -619,8 +619,8 @@ mod tests {
 
     #[test]
     fn mesh_interface_ipv4_tunnel_address_becomes_a_desired_ip_address() {
-        // `cluster.tunnel_networks.ipv4` (see mesh_config::ClusterConfig's doc comment): a mesh
-        // interface can carry a v4 entry alongside its link-local(s) - the fix for NAT/MASQUERADE
+        // `addressing.tunnel.ipv4`: a mesh interface can carry a v4 entry alongside its
+        // link-local(s) - the fix for NAT/MASQUERADE
         // otherwise having no valid source address when service_subnet traffic egresses via one.
         let mut i = iface("mesh-2", 51820);
         i.addresses = vec![

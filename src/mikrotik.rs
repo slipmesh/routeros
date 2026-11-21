@@ -443,7 +443,7 @@ pub async fn apply_ip_addresses(
 /// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
 /// actually gets announced - this function is a dumb reader, filtering nothing but our own
 /// infrastructure's dead weight (a `mesh-*` interface's own address is a legitimate candidate now
-/// that `cluster.tunnel_networks` can give it a real one, not just a link-local).
+/// that `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
@@ -453,7 +453,7 @@ pub async fn read_physically_connected_prefixes(
     for row in &rows {
         let a = parse_ip_address(row)?;
         // Unlike read_ip_addresses's footprint check, `mesh-*` interfaces are **not** excluded
-        // here: `cluster.tunnel_networks.ipv4` (see config.rs) can give one a real, non-link-local
+        // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
         // address meant to be announced when the node opts it into `router.direct_interfaces`
         // (e.g. `["home", "mesh-*"]`) - config::desired_state's own direct_interfaces/learn
         // matching is what actually decides whether any given prefix gets announced, this is just
@@ -654,7 +654,7 @@ pub async fn read_ipv6_addresses(
 
 /// Removals happen **before** adds. `diff::ipv6_addresses` keys on `(interface, address)`, so a
 /// desired address value changing on an interface that already has *some* address (e.g. a
-/// `tunnel_networks`-driven `/128` -> `/64` prefix-length change on the same base address) is a
+/// `addressing.tunnel`-driven `/128` -> `/64` prefix-length change on the same base address) is a
 /// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
 /// ("failure: already have such address") because the old, still-present entry shares the same
 /// base address, aborting the whole run with *nothing* converged: an `fe80::ff/64` add fails

@@ -9,7 +9,7 @@ use crate::diff::{
     DesiredWireguardPeer,
 };
 use crate::sanitize::validate_endpoint;
-use sliplib_config::awg::{AwgConfig, PLAIN_KEEPALIVE, PeerEntry};
+use sliplib_config::awg::{AwgConfig, InterfaceEntry, PeerEntry};
 use sliplib_config::router::RouterConfig;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -30,18 +30,16 @@ const OSPF_DEAD_INTERVAL: &str = "40s";
 /// `afi=ipv6` only and a peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
 const BGP_AFI_IPV4: &str = "ip";
 
-/// The keepalive of a peer the device dials: the one its entry sets, else 25, the interval of
-/// plain WireGuard, which is all RouterOS speaks. `keepalive_of` is not asked: it gives an
-/// obfuscated interface `20-30`, and a file of format version 1 may aim an obfuscated link at a
-/// RouterOS node, which would then be refused for a range nobody wrote. RouterOS takes one
-/// interval, so a range the entry sets is refused. `0` sends none, and is desired as none: the
-/// device reads the two back alike.
-fn keepalive_seconds(interface: &str, peer: &PeerEntry) -> anyhow::Result<Option<u16>> {
-    let interval = peer.persistent_keepalive.unwrap_or(PLAIN_KEEPALIVE);
+/// The keepalive of a peer the device dials, as its interface gives it. RouterOS takes one
+/// interval, so a range is refused. `0` sends none, and is desired as none: the device reads the
+/// two back alike.
+fn keepalive_seconds(interface: &InterfaceEntry, peer: &PeerEntry) -> anyhow::Result<Option<u16>> {
+    let interval = interface.keepalive_of(peer);
     anyhow::ensure!(
         interval.lo() == interval.hi(),
-        "interface {interface:?}, peer {:?}: persistent_keepalive {interval} is a range, and \
+        "interface {:?}, peer {:?}: persistent_keepalive {interval} is a range, and \
          RouterOS takes one number of seconds",
+        interface.name,
         peer.public_key
     );
     Ok(Some(interval.lo()).filter(|&seconds| seconds != 0))
@@ -176,7 +174,7 @@ pub fn desired_state(
             let (endpoint_address, endpoint_port, persistent_keepalive) = match &peer.endpoint {
                 Some(endpoint) => {
                     let (host, port) = parse_endpoint(endpoint)?;
-                    let keepalive = keepalive_seconds(&iface.name, peer)?;
+                    let keepalive = keepalive_seconds(iface, peer)?;
                     (Some(host), Some(port), keepalive)
                 }
                 // NAT'd peer with no reachable endpoint: no Endpoint/PersistentKeepalive, wait for
@@ -396,9 +394,9 @@ fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
     use crate::test_support::wg_key;
+    use sliplib_config::Range;
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
-    use sliplib_config::{Obfuscation, Range};
 
     fn router_config() -> RouterConfig {
         RouterConfig {
@@ -655,15 +653,13 @@ mod tests {
         assert_eq!(state.ip_v6_addresses.len(), 3);
     }
 
-    /// The keepalive desired for the one peer of an interface, which sets `obfuscation` and
-    /// has the peer at `endpoint` with its entry's keepalive `set`.
+    /// The keepalive desired for the one peer of an interface, at `endpoint` with its entry's
+    /// keepalive `set`.
     fn keepalive_desired(
-        obfuscation: Obfuscation,
         endpoint: Option<&str>,
         set: Option<Range<u16>>,
     ) -> anyhow::Result<Option<u16>> {
         let mut i = iface("mesh-2", 51820);
-        i.obfuscation = obfuscation;
         i.peers.push(PeerEntry {
             persistent_keepalive: set,
             ..peer("east-pub", endpoint)
@@ -681,7 +677,7 @@ mod tests {
     const DIALED: Option<&str> = Some("192.0.2.2:51820");
 
     fn keepalive_of_a_dialed_peer(set: Range<u16>) -> anyhow::Result<Option<u16>> {
-        keepalive_desired(Obfuscation::default(), DIALED, Some(set))
+        keepalive_desired(DIALED, Some(set))
     }
 
     #[test]
@@ -697,15 +693,8 @@ mod tests {
     }
 
     #[test]
-    fn a_dialed_peer_on_an_obfuscated_interface_takes_25_without_a_keepalive_of_its_own() {
-        let obfuscated = Obfuscation {
-            jc: Some(4),
-            ..Obfuscation::default()
-        };
-        assert_eq!(
-            keepalive_desired(obfuscated, DIALED, None).unwrap(),
-            Some(25)
-        );
+    fn a_dialed_peer_without_a_keepalive_of_its_own_takes_25() {
+        assert_eq!(keepalive_desired(DIALED, None).unwrap(), Some(25));
     }
 
     #[test]
@@ -721,11 +710,7 @@ mod tests {
 
     #[test]
     fn a_peer_only_waited_for_may_set_a_range_it_is_never_sent() {
-        let waited_for = keepalive_desired(
-            Obfuscation::default(),
-            None,
-            Some(Range::new(20, 30).unwrap()),
-        );
+        let waited_for = keepalive_desired(None, Some(Range::new(20, 30).unwrap()));
         assert_eq!(waited_for.unwrap(), None);
     }
 

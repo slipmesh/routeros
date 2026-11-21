@@ -3,9 +3,20 @@
 
 use anyhow::Context;
 use sliplib_config::v2::{File, Platform};
-use sliplib_mesh::render::{NodeConfigs, node_configs};
+use sliplib_mesh::render::{self, NodeConfigs, node_configs};
 use sliplib_yaml::MultiDoc;
 use std::path::Path;
+
+/// `refusal`, with the command that creates the secret when a missing one is what it is about.
+fn with_its_cure(refusal: render::Error) -> anyhow::Error {
+    let lacks_a_secret = refusal.missing_secret().is_some();
+    let refusal = anyhow::Error::new(refusal);
+    if lacks_a_secret {
+        anyhow::anyhow!("{refusal:#} - `slipmesh mint` creates it")
+    } else {
+        refusal
+    }
+}
 
 /// What `slipmesh.yaml` gives one node: its configs, and what the name of every interface of a
 /// link starts with.
@@ -30,7 +41,7 @@ pub fn read_node(path: &Path, node: &str) -> anyhow::Result<Node> {
         "node {node:?} is a `{platform}` node, which this tool does not configure"
     );
     let resolved = sliplib_mesh::secrets::read(&network);
-    let configs = node_configs(&network, node, &resolved)?;
+    let configs = node_configs(&network, node, &resolved).map_err(with_its_cure)?;
     Ok(Node {
         configs,
         interface_prefix: network.interface_prefix,
@@ -161,7 +172,8 @@ nodes:
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
         assert!(
-            err.contains("node \"node-a\": wireguard.private_key is not set"),
+            err.contains("node \"node-a\": wireguard.private_key is not set")
+                && err.ends_with(" - `slipmesh mint` creates it"),
             "{err}"
         );
     }
@@ -210,5 +222,17 @@ nodes:
         let node = read_node(&file.path(), "router1").unwrap();
         assert_eq!(node.interface_prefix, "wg-");
         assert_eq!(node.configs.awg.interfaces[0].name, "wg-node-a");
+    }
+
+    #[test]
+    fn a_refusal_no_secret_cures_names_no_command() {
+        let fixture = fixture().replace(
+            &format!("    wireguard: {{private_key: \"{}\"}}\n", wg_key("node-a")),
+            "    wireguard: {private_key: not a key}\n",
+        );
+        let file = written("not-a-key", &fixture);
+        let err = format!("{:#}", read_node(&file.path(), "router1").err().unwrap());
+        assert!(err.contains("node-a"), "{err}");
+        assert!(!err.contains("slipmesh mint"), "{err}");
     }
 }

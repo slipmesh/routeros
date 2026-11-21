@@ -120,7 +120,8 @@ pub async fn run(
         .iter()
         .map(|i| i.name.clone())
         .collect();
-    let current_list_members = mikrotik::read_list_members(device, &desired_ifaces).await?;
+    let current_list_members =
+        mikrotik::read_list_members(device, &desired_ifaces, &desired.interface_prefix).await?;
     let list_member_plan = crate::diff::list_members(&current_list_members, &desired.list_members);
     report.record(
         "interface list member",
@@ -153,7 +154,8 @@ pub async fn run(
     // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
     let mut our_ifaces = desired_ifaces.clone();
     our_ifaces.push(desired.loopback_bridge.name.clone());
-    let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
+    let current_addrs =
+        mikrotik::read_ip_addresses(device, &our_ifaces, &desired.interface_prefix).await?;
     let addr_plan = crate::diff::ip_addresses(&current_addrs, &desired.ip_addresses);
     report.record("ip address", &current_addrs, &addr_plan);
     if apply && !addr_plan.is_empty() {
@@ -161,7 +163,8 @@ pub async fn run(
     }
 
     // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and mesh-* interfaces).
-    let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
+    let current_v6_addrs =
+        mikrotik::read_ipv6_addresses(device, &our_ifaces, &desired.interface_prefix).await?;
     let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
     report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);
     if apply && !v6_addr_plan.is_empty() {

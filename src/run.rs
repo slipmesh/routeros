@@ -13,8 +13,10 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .install_default()
         .map_err(|_| anyhow::anyhow!("failed to install default rustls crypto provider"))?;
 
-    let slipmesh::Node { configs } =
-        slipmesh::read_node(&cli.config, &cli.node).context("failed to read the node's configs")?;
+    let slipmesh::Node {
+        configs,
+        interface_prefix,
+    } = slipmesh::read_node(&cli.config, &cli.node).context("failed to read the node's configs")?;
 
     let credentials = credentials::from_env()?;
 
@@ -27,7 +29,12 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
             .await
             .context("failed to read physically-connected prefixes from the device")?;
 
-    let desired = config::desired_state(&configs.awg, &configs.router, &physically_connected)?;
+    let desired = config::desired_state(
+        &configs.awg,
+        &configs.router,
+        &physically_connected,
+        &interface_prefix,
+    )?;
 
     converge::run(&device, &desired, cli.applies()).await
 }

@@ -385,6 +385,7 @@ fn parse_ip_address(row: &Row) -> anyhow::Result<CurrentIpAddress> {
 pub async fn read_ip_addresses(
     device: &MikrotikDevice,
     our_interfaces: &[String],
+    interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentIpAddress>> {
     let rows = print(device, IP_ADDRESS_PATH).await?;
     rows.iter()
@@ -395,7 +396,7 @@ pub async fn read_ip_addresses(
             // without this, such a row is invisible to diff::ip_addresses and never cleaned up.
             Ok(a) => {
                 our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface)
+                    || crate::diff::is_our_interface_name(&a.interface, interface_prefix)
             }
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
@@ -498,6 +499,7 @@ fn parse_list_member(row: &Row) -> anyhow::Result<CurrentListMember> {
 pub async fn read_list_members(
     device: &MikrotikDevice,
     desired_interfaces: &[String],
+    interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentListMember>> {
     let rows = print(device, LIST_MEMBER_PATH).await?;
     rows.iter()
@@ -505,7 +507,11 @@ pub async fn read_list_members(
         .filter(|r| match r {
             Ok(m) => {
                 m.list == crate::config::LAN_LIST
-                    && crate::diff::is_our_list_member_footprint(&m.interface, desired_interfaces)
+                    && crate::diff::is_our_list_member_footprint(
+                        &m.interface,
+                        desired_interfaces,
+                        interface_prefix,
+                    )
             }
             Err(_) => true,
         })
@@ -638,6 +644,7 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 pub async fn read_ipv6_addresses(
     device: &MikrotikDevice,
     our_interfaces: &[String],
+    interface_prefix: &str,
 ) -> anyhow::Result<Vec<CurrentIpv6Address>> {
     let rows = print(device, IPV6_ADDRESS_PATH).await?;
     rows.iter()
@@ -645,7 +652,7 @@ pub async fn read_ipv6_addresses(
         .filter(|r| match r {
             Ok(a) => {
                 our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface)
+                    || crate::diff::is_our_interface_name(&a.interface, interface_prefix)
             }
             Err(_) => true, // surface parse errors, don't silently swallow them
         })

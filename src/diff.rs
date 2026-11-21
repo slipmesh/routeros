@@ -105,24 +105,30 @@ pub fn passive_flag_is_true(raw: Option<&str>) -> bool {
 }
 
 /// Whether `interface` is something only this tool could have created on the `interface list
-/// member` table - either it's in the currently-desired interface set, or it matches the naming
-/// this tool alone uses (`mesh-*`) or the raw internal id RouterOS substitutes once an interface
-/// referenced by a list member has already been deleted (`*<hex>`, unresolvable back to a name).
+/// member` table - either it's in the currently-desired interface set, or it starts with
+/// `interface_prefix`, the prefix the network gives its links' interfaces, or it is the raw
+/// internal id RouterOS substitutes once an interface referenced by a list member has already
+/// been deleted (`*<hex>`, unresolvable back to a name).
 /// Used by `mikrotik.rs`'s `read_list_members` to pre-filter `current` before it ever reaches
 /// [`list_members`] - anything else on the `LAN` list (e.g. a physical WAN/LAN interface) must
 /// never be considered for removal.
-pub fn is_our_list_member_footprint(interface: &str, desired_interfaces: &[String]) -> bool {
-    desired_interfaces.iter().any(|d| d == interface) || is_our_interface_name(interface)
+pub fn is_our_list_member_footprint(
+    interface: &str,
+    desired_interfaces: &[String],
+    interface_prefix: &str,
+) -> bool {
+    desired_interfaces.iter().any(|d| d == interface)
+        || is_our_interface_name(interface, interface_prefix)
 }
 
-/// Whether `interface` is (or, via a raw orphaned id, once was) a `mesh-*` interface this tool
-/// itself creates - shared by `mikrotik.rs`'s `read_list_members` (via
+/// Whether `interface` is (or, via a raw orphaned id, once was) an interface of a link, which
+/// this tool itself creates under `interface_prefix` - shared by `mikrotik.rs`'s `read_list_members` (via
 /// [`is_our_list_member_footprint`]), `read_ip_addresses` (recognizing an `ip address` row left
 /// behind on a deleted `mesh-*` interface's now-unresolvable raw id, so it gets cleaned up instead
 /// of silently ignored), and `read_physically_connected_prefixes` (excluding the same orphaned
 /// rows from what would otherwise look like a real physically-connected LAN prefix).
-pub fn is_our_interface_name(interface: &str) -> bool {
-    interface.starts_with("mesh-") || is_raw_orphan_id(interface)
+pub fn is_our_interface_name(interface: &str, interface_prefix: &str) -> bool {
+    interface.starts_with(interface_prefix) || is_raw_orphan_id(interface)
 }
 
 /// True for a leftover raw internal id (e.g. `*16`) an address gets orphaned on after this tool
@@ -1049,20 +1055,31 @@ mod list_members_tests {
 
     #[test]
     fn footprint_check_excludes_unrelated_interfaces() {
-        assert!(!is_our_list_member_footprint("ether1-wan", &[]));
+        assert!(!is_our_list_member_footprint("ether1-wan", &[], "mesh-"));
         assert!(!is_our_list_member_footprint(
             "bridge-lan",
-            &["mesh-east".to_string()]
+            &["mesh-east".to_string()],
+            "mesh-"
         ));
     }
 
     #[test]
     fn footprint_check_includes_mesh_interfaces_and_desired_set() {
-        assert!(is_our_list_member_footprint("mesh-east", &[]));
+        assert!(is_our_list_member_footprint("mesh-east", &[], "mesh-"));
         assert!(is_our_list_member_footprint(
             "router-lo",
-            &["router-lo".to_string()]
+            &["router-lo".to_string()],
+            "mesh-"
         ));
+    }
+
+    #[test]
+    fn an_interface_is_ours_by_the_prefix_the_network_gives_its_links() {
+        assert!(is_our_interface_name("wg-east", "wg-"));
+        assert!(is_our_list_member_footprint("wg-east", &[], "wg-"));
+        // Under another prefix, the name this tool once used by default is somebody else's.
+        assert!(!is_our_interface_name("mesh-east", "wg-"));
+        assert!(!is_our_list_member_footprint("mesh-east", &[], "wg-"));
     }
 
     #[test]
@@ -1070,9 +1087,9 @@ mod list_members_tests {
         // Left behind by RouterOS once a wireguard interface this tool created was deleted -
         // must still be recognized as ours so it can be pruned, even though it no longer matches
         // "mesh-*" or any currently-desired name.
-        assert!(is_our_list_member_footprint("*4A", &[]));
-        assert!(!is_our_list_member_footprint("*not-hex", &[]));
-        assert!(!is_our_list_member_footprint("*", &[]));
+        assert!(is_our_list_member_footprint("*4A", &[], "mesh-"));
+        assert!(!is_our_list_member_footprint("*not-hex", &[], "mesh-"));
+        assert!(!is_our_list_member_footprint("*", &[], "mesh-"));
     }
 }
 

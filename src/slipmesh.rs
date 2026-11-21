@@ -7,10 +7,12 @@ use sliplib_mesh::render::{NodeConfigs, node_configs};
 use sliplib_yaml::MultiDoc;
 use std::path::Path;
 
-/// What `slipmesh.yaml` gives one node.
+/// What `slipmesh.yaml` gives one node: its configs, and what the name of every interface of a
+/// link starts with.
 #[derive(Debug)]
 pub struct Node {
     pub configs: NodeConfigs,
+    pub interface_prefix: String,
 }
 
 /// The configs of `node`, a node of `routeros`: this tool configures no other. An error reading or
@@ -29,7 +31,10 @@ pub fn read_node(path: &Path, node: &str) -> anyhow::Result<Node> {
     );
     let resolved = sliplib_mesh::secrets::read(&network);
     let configs = node_configs(&network, node, &resolved)?;
-    Ok(Node { configs })
+    Ok(Node {
+        configs,
+        interface_prefix: network.interface_prefix,
+    })
 }
 
 #[cfg(test)]
@@ -103,7 +108,7 @@ nodes:
     fn a_nodes_configs_come_from_slipmesh_yaml() {
         let file = written("configs", &fixture());
         let path = file.path();
-        let Node { configs } = read_node(&path, "router1").unwrap();
+        let Node { configs, .. } = read_node(&path, "router1").unwrap();
         assert_eq!(configs.router.bgp_as, 64512);
         assert_eq!(configs.router.direct_interfaces, ["bridge-lan"]);
         let [iface] = configs.awg.interfaces.as_slice() else {
@@ -194,5 +199,16 @@ nodes:
         let without = with_settings.replace("metrics: {}\n", "");
         let file = written("routeros-settings-empty", &without);
         read_node(&file.path(), "router1").unwrap();
+    }
+
+    #[test]
+    fn the_prefix_of_the_links_interfaces_is_the_one_the_file_sets() {
+        let file = written(
+            "prefix",
+            &fixture().replace("interface_prefix: mesh-", "interface_prefix: wg-"),
+        );
+        let node = read_node(&file.path(), "router1").unwrap();
+        assert_eq!(node.interface_prefix, "wg-");
+        assert_eq!(node.configs.awg.interfaces[0].name, "wg-node-a");
     }
 }

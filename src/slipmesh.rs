@@ -84,7 +84,7 @@ nodes:
     node_id: 0.0.0.2
     underlay: {{wan: {{}}}}
     wireguard: {{private_key: "{r}"}}
-    routing: {{direct_interfaces: [bridge-lan], learn: [], announce: []}}
+    routing: {{direct_interfaces: [bridge-lan]}}
 "#,
             a = wg_key("node-a"),
             r = wg_key("router1"),
@@ -234,5 +234,25 @@ nodes:
         let err = format!("{:#}", read_node(&file.path(), "router1").err().unwrap());
         assert!(err.contains("node-a"), "{err}");
         assert!(!err.contains("slipmesh mint"), "{err}");
+    }
+
+    #[test]
+    fn a_keepalive_the_link_sets_reaches_the_peer_the_device_dials() {
+        let fixture = fixture().replace(
+            "wireguard: {port: 51820}",
+            "wireguard: {port: 51820, persistent_keepalive: 10}",
+        );
+        let file = written("keepalive", &fixture);
+        let Node {
+            configs,
+            interface_prefix,
+        } = read_node(&file.path(), "router1").unwrap();
+        let desired =
+            crate::config::desired_state(&configs.awg, &configs.router, &[], &interface_prefix)
+                .unwrap();
+        let [peer] = desired.wireguard_peers.as_slice() else {
+            panic!("{:?}", desired.wireguard_peers);
+        };
+        assert_eq!(peer.persistent_keepalive, Some(10));
     }
 }

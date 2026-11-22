@@ -103,6 +103,21 @@ async fn apply_singleton<D: Clone>(
     if apply { do_apply(op).await } else { Ok(()) }
 }
 
+/// The interfaces of the links that are this tool's: those it asks for, `asked`, then those
+/// `current`, the rows of `interface wireguard`, holds besides, each once.
+fn our_interfaces(
+    asked: Vec<String>,
+    current: &[crate::diff::CurrentWireguardInterface],
+) -> Vec<String> {
+    let mut ours = asked;
+    for current in current {
+        if !ours.contains(&current.name) {
+            ours.push(current.name.clone());
+        }
+    }
+    ours
+}
+
 /// Reads, diffs, and (if `apply`) applies every RouterOS table in the order above. `apply =
 /// false` (i.e. `--check`) still performs every read/diff step - a real connection is required
 /// either way - it just skips every `apply_*` call. Returns a full report either way, so `--diff`
@@ -114,13 +129,19 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
-    let desired_ifaces: Vec<String> = desired
+    // The interfaces of the links, this tool's own: those `interface wireguard` holds, which only
+    // this tool writes, and those it asks for. Read before step 1, so that the members of an
+    // interface step 2 deletes go in the same run.
+    let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
+    let asked = desired
         .wireguard_interfaces
         .iter()
         .map(|i| i.name.clone())
         .collect();
-    let current_list_members = mikrotik::read_list_members(device, &desired_ifaces).await?;
+    let ours = our_interfaces(asked, &current_wg);
+
+    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
+    let current_list_members = mikrotik::read_list_members(device, &ours).await?;
     let list_member_plan = crate::diff::list_members(&current_list_members, &desired.list_members);
     report.record(
         "interface list member",
@@ -133,7 +154,6 @@ pub async fn run(
     }
 
     // 2. interface wireguard (exclusive).
-    let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
     let wg_plan = crate::diff::wireguard_interfaces(&current_wg, &desired.wireguard_interfaces);
     report.record("interface wireguard", &current_wg, &wg_plan);
     if apply && !wg_plan.is_empty() {
@@ -151,7 +171,7 @@ pub async fn run(
     .await?;
 
     // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
-    let mut our_ifaces = desired_ifaces.clone();
+    let mut our_ifaces = ours.clone();
     our_ifaces.push(desired.loopback_bridge.name.clone());
     let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
     let addr_plan = crate::diff::ip_addresses(&current_addrs, &desired.ip_addresses);
@@ -160,7 +180,8 @@ pub async fn run(
         mikrotik::apply_ip_addresses(device, &addr_plan).await?;
     }
 
-    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and mesh-* interfaces).
+    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and the links'
+    // interfaces).
     let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
     let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
     report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);
@@ -262,4 +283,31 @@ pub async fn run(
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::CurrentWireguardInterface;
+    use crate::test_support::wg_key;
+
+    fn on_the_device(name: &str) -> CurrentWireguardInterface {
+        CurrentWireguardInterface {
+            id: "*1".to_owned(),
+            name: name.to_owned(),
+            listen_port: 51820,
+            private_key_b64: wg_key("own").into(),
+            disabled: false,
+            mtu: None,
+        }
+    }
+
+    #[test]
+    fn our_interfaces_are_those_asked_for_then_those_the_device_holds_besides_each_once() {
+        let ours = our_interfaces(
+            vec!["wg-east".to_owned()],
+            &[on_the_device("mesh-east"), on_the_device("wg-east")],
+        );
+        assert_eq!(ours, ["wg-east", "mesh-east"]);
+    }
 }

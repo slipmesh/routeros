@@ -27,58 +27,63 @@ fn a_failed_run_exits_nonzero_and_logs_the_whole_error_chain() {
     assert!(log.contains("No such file or directory"), "{log}");
 }
 
-/// A file in which `router1` dials `node-a` over a link that loses data packets: `random_trailers`
-/// with a range in `h1`. Every key is generated here.
-fn losing_link() -> String {
+/// A file of format version 2 in which `router1`, of `routeros`, dials `node-a`, of `talos`. Every
+/// key is generated here.
+fn network() -> String {
     let key = || {
         sliplib_secrets::wireguard::PrivateKey::generate()
             .expose()
             .to_owned()
     };
     format!(
-        r#"slipmesh:
-  kind: network
-cluster:
-  bgp_as: 64512
-  loopback_networks: {{ipv4: "198.51.100.0/25", ipv6: "3fff::/32"}}
-nodes:
-  - {{name: node-a, node_id: "198.51.100.1", endpoint: "192.0.2.10", mesh_private_key: "{a}"}}
-  - {{name: router1, node_id: "198.51.100.2", mesh_private_key: "{r}"}}
+        r#"slipmesh: {{kind: network, version: 2, revision: 1}}
+addressing: {{loopback: {{ipv4: 198.51.100.0/25, ipv6: "3fff::/64"}}}}
+routing: {{bgp: {{as: 64512}}}}
 mesh:
+  interface_prefix: mesh-
   links:
-    - pair: [node-a, router1]
-      port: 51820
-      obfuscation: {{jc: 4, jmin: 10, jmax: 50, s1: 40, s2: 41, h1: 100-199, h2: 6, h3: 7, h4: 8, random_trailers: true}}
+    a-r1: {{type: wireguard, ends: {{node-a: {{}}, router1: {{}}}}, wireguard: {{port: 51820}}}}
+nodes:
+  node-a: {{platform: talos, node_id: 0.0.0.1, underlay: {{wan: {{endpoint: {{ipv4: 192.0.2.10}}}}}}, wireguard: {{private_key: "{a}"}}}}
+  router1: {{platform: routeros, node_id: 0.0.0.2, underlay: {{wan: {{}}}}, wireguard: {{private_key: "{r}"}}}}
 "#,
         a = key(),
         r = key(),
     )
 }
 
-#[test]
-fn a_losing_link_is_logged_as_a_warning_and_the_run_goes_on() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("losing-link");
+/// A run for `node` on `network()`, with no device to reach.
+fn run_for(name: &str, node: &str) -> (bool, String) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     let config = dir.join("slipmesh.yaml");
-    std::fs::write(&config, losing_link()).unwrap();
+    std::fs::write(&config, network()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_slipmesh-routeros"))
-        .args(["--node", "router1", "--config"])
+        .args(["--node", node, "--config"])
         .arg(&config)
         .env_remove("RUST_LOG")
         .env_remove("SLIPMESH_ROUTEROS_HOST")
         .env_remove("SLIPMESH_ROUTEROS_USERNAME")
         .output()
         .unwrap();
+    (
+        output.status.success(),
+        String::from_utf8(output.stdout).unwrap(),
+    )
+}
 
-    // It goes on past the warning, and stops at the next step: no device to reach.
-    assert!(!output.status.success(), "{:?}", output.status);
-    let log = String::from_utf8(output.stdout).unwrap();
-    let warning = log
-        .find("WARN")
-        .unwrap_or_else(|| panic!("no warning: {log}"));
-    let refusal = log
-        .find("SLIPMESH_ROUTEROS_HOST is not set")
-        .unwrap_or_else(|| panic!("no refusal: {log}"));
-    assert!(warning < refusal, "{log}");
-    assert!(log.contains("mesh link node-a-router1: "), "{log}");
+#[test]
+fn a_valid_file_is_read_and_the_run_stops_at_the_device_it_has_no_credentials_for() {
+    let (success, log) = run_for("valid", "router1");
+    assert!(!success, "{log}");
+    assert!(log.contains("SLIPMESH_ROUTEROS_HOST is not set"), "{log}");
+    assert!(!log.contains("failed to read the node's configs"), "{log}");
+}
+
+#[test]
+fn a_node_of_talos_is_refused_naming_its_platform_before_the_device() {
+    let (success, log) = run_for("talos-node", "node-a");
+    assert!(!success, "{log}");
+    assert!(log.contains("node-a") && log.contains("talos"), "{log}");
+    assert!(!log.contains("SLIPMESH_ROUTEROS_HOST"), "{log}");
 }

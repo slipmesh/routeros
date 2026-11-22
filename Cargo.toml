@@ -7,7 +7,7 @@ authors = ["slipmesh"]
 # mikrotik-rs, whose whole workspace (mikrotik-rs/mikrotik-proto/mikrotik-tokio) is AGPL-3.0-only
 # - any binary linking it must itself be AGPL-3.0-compatible.
 license = "AGPL-3.0-only"
-description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state computed by slipmesh-taloscfg from slipmesh.yaml"
+description = "One-shot CLI tool that converges a MikroTik RouterOS device to the desired state sliplib-mesh computes for it from slipmesh.yaml"
 repository = "https://github.com/slipmesh/routeros"
 # Installed from a release or by git tag, never from crates.io.
 publish = false
@@ -19,12 +19,12 @@ path = "src/main.rs"
 [dependencies]
 # Ours, from a release tag: sliplib is not published to crates.io.
 # slipmesh.yaml and a node's configs, computed from it.
-sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
-sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
+sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0", default-features = false }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"

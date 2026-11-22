@@ -229,8 +229,8 @@ pub async fn read_wireguard_interfaces(
         .collect()
 }
 
-/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g. a
-/// mesh-* interface renamed to the OSPFv3/RFC 8950 migration's `short_id`-based naming) is a
+/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g.
+/// after the network's `mesh.interface_prefix` changed) is a
 /// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
 /// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
 /// with a "Listen port already used" comment. Removing first frees the port before anything
@@ -275,7 +275,7 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
     Ok(CurrentWireguardPeer {
         interface: get_required(row, "interface", &id)?.to_string(),
         // See the module doc comment: RouterOS's own peer table has no `name` property - `comment`
-        // is used here to carry the peer's mesh_label.
+        // is used here to carry the peer's name.
         name: get(row, "comment").unwrap_or_default().to_string(),
         public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
         allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
@@ -379,24 +379,22 @@ fn parse_ip_address(row: &Row) -> anyhow::Result<CurrentIpAddress> {
     })
 }
 
-/// Reads every `ip address` row, pre-filtered to this tool's own footprint (mesh-* interfaces and
-/// the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an unfiltered read must
-/// never reach that function.
+/// Reads every `ip address` row, pre-filtered to this tool's own footprint (`ours`, the interfaces
+/// it creates and the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an
+/// unfiltered read must never reach that function.
 pub async fn read_ip_addresses(
     device: &MikrotikDevice,
-    our_interfaces: &[String],
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentIpAddress>> {
-    let rows = print(device, IP_ADDRESS_PATH).await?;
+    our_ip_addresses(&print(device, IP_ADDRESS_PATH).await?, ours)
+}
+
+/// Those of the `ip address` rows that are this tool's footprint.
+fn our_ip_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
     rows.iter()
         .map(parse_ip_address)
         .filter(|r| match r {
-            // `is_our_interface_name` additionally catches an address orphaned on a raw internal
-            // id (`*16`) left behind after this tool deleted the `mesh-*` interface it was on -
-            // without this, such a row is invisible to diff::ip_addresses and never cleaned up.
-            Ok(a) => {
-                our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface)
-            }
+            Ok(a) => crate::diff::is_ours(&a.interface, ours),
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
         .collect()
@@ -442,23 +440,30 @@ pub async fn apply_ip_addresses(
 /// computed fresh from this on every run, never configured. Candidates for
 /// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
 /// actually gets announced - this function is a dumb reader, filtering nothing but our own
-/// infrastructure's dead weight (a `mesh-*` interface's own address is a legitimate candidate now
-/// that `cluster.tunnel_networks` can give it a real one, not just a link-local).
+/// infrastructure's dead weight (the address of a link's interface is a legitimate candidate, since
+/// `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
-    let rows = print(device, IP_ADDRESS_PATH).await?;
+    physically_connected(&print(device, IP_ADDRESS_PATH).await?, loopback_bridge)
+}
+
+/// The physically-connected subnets the `ip address` rows give, each by its interface.
+fn physically_connected(
+    rows: &[Row],
+    loopback_bridge: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
     let mut prefixes = Vec::new();
-    for row in &rows {
+    for row in rows {
         let a = parse_ip_address(row)?;
-        // Unlike read_ip_addresses's footprint check, `mesh-*` interfaces are **not** excluded
-        // here: `cluster.tunnel_networks.ipv4` (see config.rs) can give one a real, non-link-local
-        // address meant to be announced when the node opts it into `router.direct_interfaces`
-        // (e.g. `["home", "mesh-*"]`) - config::desired_state's own direct_interfaces/learn
-        // matching is what actually decides whether any given prefix gets announced, this is just
-        // the candidate list. Only a raw internal id orphaned by a deleted mesh-* interface (e.g.
-        // `*16`) and the loopback bridge itself are excluded - neither is ever announce-worthy.
+        // Unlike read_ip_addresses's footprint check, the links' interfaces are **not** excluded
+        // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
+        // address meant to be announced when the node's `direct_interfaces` hold the links'
+        // pattern - config::desired_state's own direct_interfaces/learn matching is what actually
+        // decides whether any given prefix gets announced, this is just the candidate list. Only a
+        // raw internal id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge
+        // itself are excluded - neither is ever announce-worthy.
         if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == loopback_bridge {
             continue;
         }
@@ -493,20 +498,21 @@ fn parse_list_member(row: &Row) -> anyhow::Result<CurrentListMember> {
     })
 }
 
-/// Pre-filtered via `diff::is_our_list_member_footprint` - see that function's and
-/// `diff::list_members`'s doc comments.
+/// Every `interface list member` row of the `LAN` list on one of `ours`, the interfaces this tool
+/// creates - see `diff::is_ours` and `diff::list_members`'s doc comment.
 pub async fn read_list_members(
     device: &MikrotikDevice,
-    desired_interfaces: &[String],
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentListMember>> {
-    let rows = print(device, LIST_MEMBER_PATH).await?;
+    our_list_members(&print(device, LIST_MEMBER_PATH).await?, ours)
+}
+
+/// Those of the `interface list member` rows that are this tool's footprint.
+fn our_list_members(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentListMember>> {
     rows.iter()
         .map(parse_list_member)
         .filter(|r| match r {
-            Ok(m) => {
-                m.list == crate::config::LAN_LIST
-                    && crate::diff::is_our_list_member_footprint(&m.interface, desired_interfaces)
-            }
+            Ok(m) => m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours),
             Err(_) => true,
         })
         .collect()
@@ -615,18 +621,18 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
     })
 }
 
-/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (interface name in
-/// `our_interfaces`, or recognized by `diff::is_our_interface_name`) - see `diff::ipv6_addresses`'s
-/// doc comment on why an unfiltered read must never reach that function.
+/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (`diff::is_ours`) -
+/// see `diff::ipv6_addresses`'s doc comment on why an unfiltered read must never reach that
+/// function.
 ///
 /// Link-local (`fe80::/10`) rows are **not** specially excluded here - both `router-lo` and
-/// `mesh-*` are in scope, so any auto-generated link-local RouterOS puts on one of them ends up
-/// "in footprint but not desired" and gets cleaned up like any other stale row. This matters for
-/// two different reasons per interface type:
-/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - once a second mesh link
-///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
-///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
-///   all of them. `config::desired_state` applies the address explicitly
+/// the links' interfaces are in scope, so any auto-generated link-local RouterOS puts on one of
+/// them ends up "in footprint but not desired" and gets cleaned up like any other stale row. This
+/// matters for two different reasons per interface type:
+/// - the links' interfaces (WireGuard): RouterOS's own auto-generation is broken - once a second
+///   mesh link exists, every one of them gets the *identical* link-local, and RouterOS's own
+///   duplicate address detection marks every one past the first `invalid`, breaking OSPFv3
+///   adjacency on all of them. `config::desired_state` applies the address explicitly
 ///   (from `awg.interfaces[].addresses`), with
 ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
 ///   see `config::own_ipv6_address`.
@@ -637,16 +643,17 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   destination, so nothing should be left there to redistribute by accident.
 pub async fn read_ipv6_addresses(
     device: &MikrotikDevice,
-    our_interfaces: &[String],
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    let rows = print(device, IPV6_ADDRESS_PATH).await?;
+    our_ipv6_addresses(&print(device, IPV6_ADDRESS_PATH).await?, ours)
+}
+
+/// Those of the `ipv6 address` rows that are this tool's footprint.
+fn our_ipv6_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpv6Address>> {
     rows.iter()
         .map(parse_ipv6_address)
         .filter(|r| match r {
-            Ok(a) => {
-                our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface)
-            }
+            Ok(a) => crate::diff::is_ours(&a.interface, ours),
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
         .collect()
@@ -654,7 +661,7 @@ pub async fn read_ipv6_addresses(
 
 /// Removals happen **before** adds. `diff::ipv6_addresses` keys on `(interface, address)`, so a
 /// desired address value changing on an interface that already has *some* address (e.g. a
-/// `tunnel_networks`-driven `/128` -> `/64` prefix-length change on the same base address) is a
+/// `addressing.tunnel`-driven `/128` -> `/64` prefix-length change on the same base address) is a
 /// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
 /// ("failure: already have such address") because the old, still-present entry shares the same
 /// base address, aborting the whole run with *nothing* converged: an `fe80::ff/64` add fails
@@ -1462,5 +1469,135 @@ mod tests {
             "=numbers=*1"
         ));
         assert!(sends_word(cmd, "=value-name=passive"));
+    }
+
+    /// Rows on an interface `interface wireguard` holds, on one the tool asks for by name, on one
+    /// that is nobody's of ours, on one named like the links' interfaces and not among them, and
+    /// on the raw id a deleted interface leaves behind; each with `address`.
+    fn rows_on_interfaces(address: &str) -> Vec<Row> {
+        ["wg-east", "router-lo", "ether1", "wg-west", "*16"]
+            .iter()
+            .zip(1..)
+            .map(|(interface, id)| {
+                row(&[
+                    (".id", &format!("*{id}")),
+                    ("address", address),
+                    ("interface", interface),
+                    ("list", crate::config::LAN_LIST),
+                ])
+            })
+            .collect()
+    }
+
+    fn ours() -> Vec<String> {
+        vec!["wg-east".to_owned(), "router-lo".to_owned()]
+    }
+
+    const OURS: [&str; 3] = ["wg-east", "router-lo", "*16"];
+
+    #[test]
+    fn the_ip_addresses_read_are_those_on_this_tools_interfaces() {
+        let read = our_ip_addresses(&rows_on_interfaces("192.0.2.1/32"), &ours()).unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn the_ipv6_addresses_read_are_those_on_this_tools_interfaces() {
+        let read = our_ipv6_addresses(&rows_on_interfaces("fe80::1/64"), &ours()).unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn the_list_members_read_are_those_of_the_lan_list_on_this_tools_interfaces() {
+        let mut rows = rows_on_interfaces("192.0.2.1/32");
+        // On an interface of ours, in a list that is not.
+        rows.push(row(&[
+            (".id", "*9"),
+            ("interface", "wg-east"),
+            ("list", "WAN"),
+        ]));
+        let read = our_list_members(&rows, &ours()).unwrap();
+        let interfaces: Vec<&str> = read.iter().map(|m| m.interface.as_str()).collect();
+        assert_eq!(interfaces, OURS);
+    }
+
+    #[test]
+    fn a_row_that_does_not_parse_is_an_error_and_not_passed_over() {
+        let unparsed = vec![row(&[(".id", "*1")])];
+        assert!(our_ip_addresses(&unparsed, &[]).is_err());
+        assert!(our_ipv6_addresses(&unparsed, &[]).is_err());
+        assert!(our_list_members(&unparsed, &[]).is_err());
+    }
+
+    #[test]
+    fn the_physically_connected_subnets_are_every_address_but_the_loopback_and_an_orphan() {
+        let rows: Vec<Row> = [
+            ("ether1", "203.0.113.1/27"),
+            ("wg-east", "198.51.100.129/32"),
+            ("router-lo", "198.51.100.2/32"),
+            ("*16", "203.0.113.33/27"),
+            ("ether2", "not an address"),
+        ]
+        .iter()
+        .zip(1..)
+        .map(|((interface, address), id)| {
+            row(&[
+                (".id", &format!("*{id}")),
+                ("address", address),
+                ("interface", interface),
+            ])
+        })
+        .collect();
+        let connected = physically_connected(&rows, "router-lo").unwrap();
+        assert_eq!(
+            connected,
+            [
+                ("ether1".to_owned(), "203.0.113.0/27".to_owned()),
+                ("wg-east".to_owned(), "198.51.100.129/32".to_owned()),
+            ]
+        );
+        assert!(physically_connected(&[row(&[(".id", "*1")])], "router-lo").is_err());
+    }
+
+    #[test]
+    fn an_interface_named_like_the_links_is_not_claimed_unless_it_is_ours() {
+        // With the links' interfaces named `e-<peer>`, the WAN port's address and a LAN member
+        // on another port stay as they are.
+        let rows: Vec<Row> = ["ether1", "ether2"]
+            .iter()
+            .zip(1..)
+            .map(|(interface, id)| {
+                row(&[
+                    (".id", &format!("*{id}")),
+                    ("address", "203.0.113.2/24"),
+                    ("interface", interface),
+                    ("list", crate::config::LAN_LIST),
+                ])
+            })
+            .collect();
+        let ours = vec!["e-east".to_owned()];
+        assert!(our_ip_addresses(&rows, &ours).unwrap().is_empty());
+        assert!(our_list_members(&rows, &ours).unwrap().is_empty());
+    }
+
+    #[test]
+    fn after_a_prefix_change_the_old_interfaces_rows_are_read_as_ours_to_remove() {
+        // `interface wireguard` still holds `mesh-east`; the tool now asks for `wg-east`.
+        let rows = vec![row(&[
+            (".id", "*1"),
+            ("interface", "mesh-east"),
+            ("list", crate::config::LAN_LIST),
+        ])];
+        let ours = vec!["wg-east".to_owned(), "mesh-east".to_owned()];
+        let read = our_list_members(&rows, &ours).unwrap();
+        let desired = [crate::diff::DesiredListMember {
+            list: crate::config::LAN_LIST.to_owned(),
+            interface: "wg-east".to_owned(),
+            disabled: false,
+        }];
+        let plan = crate::diff::list_members(&read, &desired);
+        assert_eq!(plan.remove, ["*1"]);
     }
 }

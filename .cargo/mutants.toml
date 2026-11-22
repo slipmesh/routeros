@@ -1,3 +1,10 @@
 # Applying a plan to the device is a thin shim over the RouterOS API that only a live device
 # exercises (see `src/mikrotik.rs`): no unit test can tell a call to it from none.
-exclude_re = ["src/mikrotik.rs:.*replace apply_"]
+# The four reads below are the same kind of shim: each reads a table off the device and hands the
+# rows to a function that decides, and is tested for, which of them the tool keeps.
+# `converge::run` is the order the tables are read and applied in, against the device.
+exclude_re = [
+    "src/mikrotik.rs:.*replace apply_",
+    "src/mikrotik.rs:.*replace read_(ip_addresses|ipv6_addresses|list_members|physically_connected_prefixes) ",
+    "src/converge.rs:.*replace run -> ",
+]

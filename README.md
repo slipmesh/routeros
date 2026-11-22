@@ -17,7 +17,8 @@ converges, and exits.
 slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]
 ```
 
-- `--node` - the device's node in `slipmesh.yaml`.
+- `--node` - the device's node in `slipmesh.yaml`, a node of `platform: routeros`. A node of
+  another platform is refused, naming its platform.
 - `--config` - `slipmesh.yaml` as plain text, `slipmesh.yaml` in the current directory by default.
   The tool reads plaintext and knows nothing of encryption: whoever keeps the file encrypted
   decrypts it for the run and passes the plaintext path as `--config`.
@@ -27,13 +28,16 @@ slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]
 
 Requires:
 
-- `slipmesh.yaml` with the node and every secret its configs need: the mesh private keys of the
-  node and its peers, the obfuscation of each of its links that is not `plain`, and the private key
-  of each roadwarriors pool on it, with its obfuscation unless the pool is `plain`. A file that is
-  missing, malformed or lacks one of them is a fatal error before the device is touched;
-  `slipmesh-taloscfg generate` writes the secrets a file lacks. This tool checks only what its own
-  node's configs need: a file the Talos generator refuses for a Talos-only reason - a template, a
-  patch document, an annotation - is still accepted here.
+- `slipmesh.yaml` in format version 2, with `mesh.interface_prefix`, the node, and every secret its
+  configs need: the `wireguard.private_key` of the node and of each of its peers. A file that is
+  missing or malformed, lacks one of them, or is of format version 1 is a fatal error before the
+  device is touched. The refusal of a missing key or of a file without `mesh.interface_prefix`
+  names `slipmesh mint`, which creates the key and writes the prefix. A file of version 1 is
+  converted as "Converting a file by hand" in sliplib's `docs/slipmesh-yaml-v1-to-v2.md` says,
+  the document its refusal names. The `platform` document of `routeros`, where there is one,
+  takes no key. This tool checks only what its own node's configs
+  need: a file the Talos generator refuses for a Talos-only reason - a template, a patch document,
+  an annotation - is still accepted here.
 - The device's API credentials in the environment:
 
   | variable | |
@@ -52,12 +56,12 @@ Requires:
 ## Upgrading from the patch file
 
 - `--patches-dir` is gone: pass `--config` with the path of `slipmesh.yaml` instead.
-- The tool now reads the whole decrypted `slipmesh.yaml`, which holds every node's and every
-  pool's private key; the patch file held only this router's key and its peers' public keys.
+- The tool now reads the whole decrypted `slipmesh.yaml`, which holds every node's private key;
+  the patch file held only this router's key and its peers' public keys.
   The plaintext should exist only for the run: decrypt it for that run and remove it after, never
   keep a plaintext copy beside the encrypted file.
-- The file must already hold the secrets: run `slipmesh-taloscfg generate` once first, so that
-  every key and obfuscation is written into it.
+- The file must already hold the secrets: run `slipmesh mint` once first, so that every key is
+  written into it.
 
 ## What it converges
 
@@ -69,13 +73,14 @@ order (`converge.rs`'s module doc comment is the authoritative list). Each is re
 device and diffed against the desired state before anything is written.
 
 A peer the device dials gets a persistent keepalive: the `persistent_keepalive` of its entry in
-the node's `awg` config, or 25 seconds when the entry sets none, whatever the interface sets of
-the obfuscation; `0` sends none. RouterOS takes one interval, so an entry that sets a range is
-refused, naming the interface and the peer. A peer the device only waits for is sent none, and
-whatever its entry sets is not read.
+the node's `awg` config, or 25 seconds, the interval of plain WireGuard, when the entry sets none;
+`0` sends none. A peer the device only waits for is sent none, and whatever its entry sets is not
+read.
 
-Before it converges, the tool logs a warning for each way `sliplib-mesh` finds one of the node's
-links losing data packets, one line each, and goes on.
+The interfaces of the node's links are named by the network's `mesh.interface_prefix` and the name
+of the peer's node, and a peer is named after its node. The tool takes as its own the interfaces
+`interface wireguard` holds, a table only it writes, and the rows other tables hold on them, so
+that a prefix matching a port of the device takes nothing of that port.
 
 Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing bfd configuration`,
 `routing ospf interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a

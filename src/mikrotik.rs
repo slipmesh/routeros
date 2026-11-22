@@ -229,8 +229,8 @@ pub async fn read_wireguard_interfaces(
         .collect()
 }
 
-/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g. a
-/// mesh-* interface renamed to the OSPFv3/RFC 8950 migration's `short_id`-based naming) is a
+/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g.
+/// after the network's `mesh.interface_prefix` changed) is a
 /// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
 /// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
 /// with a "Listen port already used" comment. Removing first frees the port before anything
@@ -275,7 +275,7 @@ fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
     Ok(CurrentWireguardPeer {
         interface: get_required(row, "interface", &id)?.to_string(),
         // See the module doc comment: RouterOS's own peer table has no `name` property - `comment`
-        // is used here to carry the peer's mesh_label.
+        // is used here to carry the peer's name.
         name: get(row, "comment").unwrap_or_default().to_string(),
         public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
         allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
@@ -440,8 +440,8 @@ pub async fn apply_ip_addresses(
 /// computed fresh from this on every run, never configured. Candidates for
 /// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
 /// actually gets announced - this function is a dumb reader, filtering nothing but our own
-/// infrastructure's dead weight (a `mesh-*` interface's own address is a legitimate candidate now
-/// that `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
+/// infrastructure's dead weight (the address of a link's interface is a legitimate candidate, since
+/// `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
     loopback_bridge: &str,
@@ -457,13 +457,13 @@ fn physically_connected(
     let mut prefixes = Vec::new();
     for row in rows {
         let a = parse_ip_address(row)?;
-        // Unlike read_ip_addresses's footprint check, `mesh-*` interfaces are **not** excluded
+        // Unlike read_ip_addresses's footprint check, the links' interfaces are **not** excluded
         // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
-        // address meant to be announced when the node opts it into `router.direct_interfaces`
-        // (e.g. `["home", "mesh-*"]`) - config::desired_state's own direct_interfaces/learn
-        // matching is what actually decides whether any given prefix gets announced, this is just
-        // the candidate list. Only a raw internal id orphaned by a deleted mesh-* interface (e.g.
-        // `*16`) and the loopback bridge itself are excluded - neither is ever announce-worthy.
+        // address meant to be announced when the node's `direct_interfaces` hold the links'
+        // pattern - config::desired_state's own direct_interfaces/learn matching is what actually
+        // decides whether any given prefix gets announced, this is just the candidate list. Only a
+        // raw internal id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge
+        // itself are excluded - neither is ever announce-worthy.
         if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == loopback_bridge {
             continue;
         }
@@ -621,18 +621,18 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
     })
 }
 
-/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (interface name in
-/// `our_interfaces`, or recognized by `diff::is_our_interface_name`) - see `diff::ipv6_addresses`'s
-/// doc comment on why an unfiltered read must never reach that function.
+/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (`diff::is_ours`) -
+/// see `diff::ipv6_addresses`'s doc comment on why an unfiltered read must never reach that
+/// function.
 ///
 /// Link-local (`fe80::/10`) rows are **not** specially excluded here - both `router-lo` and
-/// `mesh-*` are in scope, so any auto-generated link-local RouterOS puts on one of them ends up
-/// "in footprint but not desired" and gets cleaned up like any other stale row. This matters for
-/// two different reasons per interface type:
-/// - `mesh-*` (WireGuard): RouterOS's own auto-generation is broken - once a second mesh link
-///   exists, every one of them gets the *identical* link-local, and RouterOS's own duplicate
-///   address detection marks every one past the first `invalid`, breaking OSPFv3 adjacency on
-///   all of them. `config::desired_state` applies the address explicitly
+/// the links' interfaces are in scope, so any auto-generated link-local RouterOS puts on one of
+/// them ends up "in footprint but not desired" and gets cleaned up like any other stale row. This
+/// matters for two different reasons per interface type:
+/// - the links' interfaces (WireGuard): RouterOS's own auto-generation is broken - once a second
+///   mesh link exists, every one of them gets the *identical* link-local, and RouterOS's own
+///   duplicate address detection marks every one past the first `invalid`, breaking OSPFv3
+///   adjacency on all of them. `config::desired_state` applies the address explicitly
 ///   (from `awg.interfaces[].addresses`), with
 ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
 ///   see `config::own_ipv6_address`.

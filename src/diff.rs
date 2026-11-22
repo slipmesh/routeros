@@ -113,9 +113,9 @@ pub fn is_ours(interface: &str, ours: &[String]) -> bool {
 }
 
 /// True for a leftover raw internal id (e.g. `*16`) an address gets orphaned on after this tool
-/// deletes the `mesh-*` interface it used to belong to - never a real physically-connected LAN
-/// prefix worth announcing, unlike a `mesh-*` interface's own address (see
-/// `mikrotik::read_physically_connected_prefixes`, which excludes only this, not `mesh-*` itself).
+/// deletes the interface it used to belong to - never a real physically-connected LAN prefix
+/// worth announcing, unlike the address of a link's interface (see
+/// `mikrotik::read_physically_connected_prefixes`, which excludes only this, not those).
 pub fn is_raw_orphan_id(interface: &str) -> bool {
     interface
         .strip_prefix('*')
@@ -295,7 +295,7 @@ impl HasId for CurrentIpv6Address {
 
 /// Same shape/staleness rule as [`ip_addresses`] - `current` must already be pre-filtered by the
 /// caller to this tool's own footprint (see the module doc comment): the loopback bridge and the
-/// mesh-* interfaces.
+/// links' interfaces.
 pub fn ipv6_addresses(
     current: &[CurrentIpv6Address],
     desired: &[DesiredIpv6Address],
@@ -779,7 +779,7 @@ mod wireguard_interfaces_tests {
     #[test]
     fn pure_remove_of_undesired_interface() {
         // Exclusive table: an interface no longer in desired must be fully removed, since nothing
-        // else on the device could have legitimately created a "mesh-*" wireguard interface.
+        // else on the device could have legitimately created a wireguard interface.
         let cur = vec![current("*1", "mesh-stale", 51820)];
         let plan = wireguard_interfaces(&cur, &[]);
         assert_eq!(plan.remove, vec!["*1".to_string()]);

@@ -102,9 +102,9 @@ fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> 
     ))
 }
 
-/// Only the suffix-`*` grammar the node's configs use (`"mesh-*"`), enough for `ospf_interfaces`
-/// and `direct_interfaces`: RouterOS has no pattern engine to hand them to, so this tool matches
-/// locally.
+/// Only the suffix-`*` grammar the node's configs use (the links' prefix and `*`), enough for
+/// `ospf_interfaces` and `direct_interfaces`: RouterOS has no pattern engine to hand them to, so
+/// this tool matches locally.
 fn glob_match(pattern: &str, name: &str) -> bool {
     match pattern.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),

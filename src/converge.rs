@@ -169,7 +169,8 @@ pub async fn run(
         mikrotik::apply_ip_addresses(device, &addr_plan).await?;
     }
 
-    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and mesh-* interfaces).
+    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and the links'
+    // interfaces).
     let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
     let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
     report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);

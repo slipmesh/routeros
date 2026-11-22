@@ -379,37 +379,22 @@ fn parse_ip_address(row: &Row) -> anyhow::Result<CurrentIpAddress> {
     })
 }
 
-/// Reads every `ip address` row, pre-filtered to this tool's own footprint (mesh-* interfaces and
-/// the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an unfiltered read must
-/// never reach that function.
+/// Reads every `ip address` row, pre-filtered to this tool's own footprint (`ours`, the interfaces
+/// it creates and the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an
+/// unfiltered read must never reach that function.
 pub async fn read_ip_addresses(
     device: &MikrotikDevice,
-    our_interfaces: &[String],
-    interface_prefix: &str,
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentIpAddress>> {
-    our_ip_addresses(
-        &print(device, IP_ADDRESS_PATH).await?,
-        our_interfaces,
-        interface_prefix,
-    )
+    our_ip_addresses(&print(device, IP_ADDRESS_PATH).await?, ours)
 }
 
 /// Those of the `ip address` rows that are this tool's footprint.
-fn our_ip_addresses(
-    rows: &[Row],
-    our_interfaces: &[String],
-    interface_prefix: &str,
-) -> anyhow::Result<Vec<CurrentIpAddress>> {
+fn our_ip_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
     rows.iter()
         .map(parse_ip_address)
         .filter(|r| match r {
-            // `is_our_interface_name` additionally catches an address orphaned on a raw internal
-            // id (`*16`) left behind after this tool deleted the `mesh-*` interface it was on -
-            // without this, such a row is invisible to diff::ip_addresses and never cleaned up.
-            Ok(a) => {
-                our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface, interface_prefix)
-            }
+            Ok(a) => crate::diff::is_ours(&a.interface, ours),
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
         .collect()
@@ -513,37 +498,21 @@ fn parse_list_member(row: &Row) -> anyhow::Result<CurrentListMember> {
     })
 }
 
-/// Pre-filtered via `diff::is_our_list_member_footprint` - see that function's and
-/// `diff::list_members`'s doc comments.
+/// Every `interface list member` row of the `LAN` list on one of `ours`, the interfaces this tool
+/// creates - see `diff::is_ours` and `diff::list_members`'s doc comment.
 pub async fn read_list_members(
     device: &MikrotikDevice,
-    desired_interfaces: &[String],
-    interface_prefix: &str,
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentListMember>> {
-    our_list_members(
-        &print(device, LIST_MEMBER_PATH).await?,
-        desired_interfaces,
-        interface_prefix,
-    )
+    our_list_members(&print(device, LIST_MEMBER_PATH).await?, ours)
 }
 
 /// Those of the `interface list member` rows that are this tool's footprint.
-fn our_list_members(
-    rows: &[Row],
-    desired_interfaces: &[String],
-    interface_prefix: &str,
-) -> anyhow::Result<Vec<CurrentListMember>> {
+fn our_list_members(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentListMember>> {
     rows.iter()
         .map(parse_list_member)
         .filter(|r| match r {
-            Ok(m) => {
-                m.list == crate::config::LAN_LIST
-                    && crate::diff::is_our_list_member_footprint(
-                        &m.interface,
-                        desired_interfaces,
-                        interface_prefix,
-                    )
-            }
+            Ok(m) => m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours),
             Err(_) => true,
         })
         .collect()
@@ -674,29 +643,17 @@ fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
 ///   destination, so nothing should be left there to redistribute by accident.
 pub async fn read_ipv6_addresses(
     device: &MikrotikDevice,
-    our_interfaces: &[String],
-    interface_prefix: &str,
+    ours: &[String],
 ) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    our_ipv6_addresses(
-        &print(device, IPV6_ADDRESS_PATH).await?,
-        our_interfaces,
-        interface_prefix,
-    )
+    our_ipv6_addresses(&print(device, IPV6_ADDRESS_PATH).await?, ours)
 }
 
 /// Those of the `ipv6 address` rows that are this tool's footprint.
-fn our_ipv6_addresses(
-    rows: &[Row],
-    our_interfaces: &[String],
-    interface_prefix: &str,
-) -> anyhow::Result<Vec<CurrentIpv6Address>> {
+fn our_ipv6_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpv6Address>> {
     rows.iter()
         .map(parse_ipv6_address)
         .filter(|r| match r {
-            Ok(a) => {
-                our_interfaces.iter().any(|i| i == &a.interface)
-                    || crate::diff::is_our_interface_name(&a.interface, interface_prefix)
-            }
+            Ok(a) => crate::diff::is_ours(&a.interface, ours),
             Err(_) => true, // surface parse errors, don't silently swallow them
         })
         .collect()
@@ -1514,17 +1471,17 @@ mod tests {
         assert!(sends_word(cmd, "=value-name=passive"));
     }
 
-    /// Address rows on an interface of a link under the prefix `wg-`, on one the tool asks for by
-    /// name, on one that is nobody's of ours, on one named by the default prefix, and on the raw
-    /// id a deleted interface leaves behind.
-    fn rows_on_interfaces() -> Vec<Row> {
-        ["wg-east", "router-lo", "ether1", "mesh-east", "*16"]
+    /// Rows on an interface `interface wireguard` holds, on one the tool asks for by name, on one
+    /// that is nobody's of ours, on one named like the links' interfaces and not among them, and
+    /// on the raw id a deleted interface leaves behind; each with `address`.
+    fn rows_on_interfaces(address: &str) -> Vec<Row> {
+        ["wg-east", "router-lo", "ether1", "wg-west", "*16"]
             .iter()
             .zip(1..)
             .map(|(interface, id)| {
                 row(&[
                     (".id", &format!("*{id}")),
-                    ("address", "192.0.2.1/32"),
+                    ("address", address),
                     ("interface", interface),
                     ("list", crate::config::LAN_LIST),
                 ])
@@ -1532,36 +1489,36 @@ mod tests {
             .collect()
     }
 
-    fn asked_for() -> Vec<String> {
-        vec!["router-lo".to_owned()]
+    fn ours() -> Vec<String> {
+        vec!["wg-east".to_owned(), "router-lo".to_owned()]
     }
 
     const OURS: [&str; 3] = ["wg-east", "router-lo", "*16"];
 
     #[test]
     fn the_ip_addresses_read_are_those_on_this_tools_interfaces() {
-        let read = our_ip_addresses(&rows_on_interfaces(), &asked_for(), "wg-").unwrap();
+        let read = our_ip_addresses(&rows_on_interfaces("192.0.2.1/32"), &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
 
     #[test]
     fn the_ipv6_addresses_read_are_those_on_this_tools_interfaces() {
-        let read = our_ipv6_addresses(&rows_on_interfaces(), &asked_for(), "wg-").unwrap();
+        let read = our_ipv6_addresses(&rows_on_interfaces("fe80::1/64"), &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
 
     #[test]
     fn the_list_members_read_are_those_of_the_lan_list_on_this_tools_interfaces() {
-        let mut rows = rows_on_interfaces();
+        let mut rows = rows_on_interfaces("192.0.2.1/32");
         // On an interface of ours, in a list that is not.
         rows.push(row(&[
             (".id", "*9"),
-            ("interface", "wg-west"),
+            ("interface", "wg-east"),
             ("list", "WAN"),
         ]));
-        let read = our_list_members(&rows, &asked_for(), "wg-").unwrap();
+        let read = our_list_members(&rows, &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|m| m.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
@@ -1569,13 +1526,13 @@ mod tests {
     #[test]
     fn a_row_that_does_not_parse_is_an_error_and_not_passed_over() {
         let unparsed = vec![row(&[(".id", "*1")])];
-        assert!(our_ip_addresses(&unparsed, &[], "wg-").is_err());
-        assert!(our_ipv6_addresses(&unparsed, &[], "wg-").is_err());
-        assert!(our_list_members(&unparsed, &[], "wg-").is_err());
+        assert!(our_ip_addresses(&unparsed, &[]).is_err());
+        assert!(our_ipv6_addresses(&unparsed, &[]).is_err());
+        assert!(our_list_members(&unparsed, &[]).is_err());
     }
 
     #[test]
-    fn the_physically_connected_subnets_are_every_address_but_the_loopbacks_and_an_orphans() {
+    fn the_physically_connected_subnets_are_every_address_but_the_loopback_and_an_orphan() {
         let rows: Vec<Row> = [
             ("ether1", "203.0.113.1/27"),
             ("wg-east", "198.51.100.129/32"),
@@ -1602,5 +1559,45 @@ mod tests {
             ]
         );
         assert!(physically_connected(&[row(&[(".id", "*1")])], "router-lo").is_err());
+    }
+
+    #[test]
+    fn an_interface_named_like_the_links_is_not_claimed_unless_it_is_ours() {
+        // With the links' interfaces named `e-<peer>`, the WAN port's address and a LAN member
+        // on another port stay as they are.
+        let rows: Vec<Row> = ["ether1", "ether2"]
+            .iter()
+            .zip(1..)
+            .map(|(interface, id)| {
+                row(&[
+                    (".id", &format!("*{id}")),
+                    ("address", "203.0.113.2/24"),
+                    ("interface", interface),
+                    ("list", crate::config::LAN_LIST),
+                ])
+            })
+            .collect();
+        let ours = vec!["e-east".to_owned()];
+        assert!(our_ip_addresses(&rows, &ours).unwrap().is_empty());
+        assert!(our_list_members(&rows, &ours).unwrap().is_empty());
+    }
+
+    #[test]
+    fn after_a_prefix_change_the_old_interfaces_rows_are_read_as_ours_to_remove() {
+        // `interface wireguard` still holds `mesh-east`; the tool now asks for `wg-east`.
+        let rows = vec![row(&[
+            (".id", "*1"),
+            ("interface", "mesh-east"),
+            ("list", crate::config::LAN_LIST),
+        ])];
+        let ours = vec!["wg-east".to_owned(), "mesh-east".to_owned()];
+        let read = our_list_members(&rows, &ours).unwrap();
+        let desired = [crate::diff::DesiredListMember {
+            list: crate::config::LAN_LIST.to_owned(),
+            interface: "wg-east".to_owned(),
+            disabled: false,
+        }];
+        let plan = crate::diff::list_members(&read, &desired);
+        assert_eq!(plan.remove, ["*1"]);
     }
 }

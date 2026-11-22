@@ -114,14 +114,23 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
-    let desired_ifaces: Vec<String> = desired
+    // The interfaces of the links, this tool's own: those `interface wireguard` holds, which only
+    // this tool writes, and those it asks for. Read before step 1, so that the members of an
+    // interface step 2 deletes go in the same run.
+    let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
+    let mut ours: Vec<String> = desired
         .wireguard_interfaces
         .iter()
         .map(|i| i.name.clone())
         .collect();
-    let current_list_members =
-        mikrotik::read_list_members(device, &desired_ifaces, &desired.interface_prefix).await?;
+    for current in &current_wg {
+        if !ours.contains(&current.name) {
+            ours.push(current.name.clone());
+        }
+    }
+
+    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
+    let current_list_members = mikrotik::read_list_members(device, &ours).await?;
     let list_member_plan = crate::diff::list_members(&current_list_members, &desired.list_members);
     report.record(
         "interface list member",
@@ -134,7 +143,6 @@ pub async fn run(
     }
 
     // 2. interface wireguard (exclusive).
-    let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
     let wg_plan = crate::diff::wireguard_interfaces(&current_wg, &desired.wireguard_interfaces);
     report.record("interface wireguard", &current_wg, &wg_plan);
     if apply && !wg_plan.is_empty() {
@@ -152,10 +160,9 @@ pub async fn run(
     .await?;
 
     // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
-    let mut our_ifaces = desired_ifaces.clone();
+    let mut our_ifaces = ours.clone();
     our_ifaces.push(desired.loopback_bridge.name.clone());
-    let current_addrs =
-        mikrotik::read_ip_addresses(device, &our_ifaces, &desired.interface_prefix).await?;
+    let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
     let addr_plan = crate::diff::ip_addresses(&current_addrs, &desired.ip_addresses);
     report.record("ip address", &current_addrs, &addr_plan);
     if apply && !addr_plan.is_empty() {
@@ -163,8 +170,7 @@ pub async fn run(
     }
 
     // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and mesh-* interfaces).
-    let current_v6_addrs =
-        mikrotik::read_ipv6_addresses(device, &our_ifaces, &desired.interface_prefix).await?;
+    let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
     let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
     report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);
     if apply && !v6_addr_plan.is_empty() {

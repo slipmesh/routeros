@@ -47,9 +47,6 @@ fn keepalive_seconds(interface: &InterfaceEntry, peer: &PeerEntry) -> anyhow::Re
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredState {
-    /// What the name of every interface this tool creates for a link starts with: by it an
-    /// interface on the device is known as this tool's.
-    pub interface_prefix: String,
     pub wireguard_interfaces: Vec<DesiredWireguardInterface>,
     pub ip_addresses: Vec<DesiredIpAddress>,
     pub ip_v6_addresses: Vec<DesiredIpv6Address>,
@@ -349,7 +346,6 @@ pub fn desired_state(
     }
 
     Ok(DesiredState {
-        interface_prefix: interface_prefix.to_owned(),
         wireguard_interfaces,
         ip_addresses,
         ip_v6_addresses,
@@ -917,6 +913,5 @@ mod tests {
             .collect();
         // The prefix is taken off once: a node may be named like it.
         assert_eq!(names, ["east", "wg-west"]);
-        assert_eq!(state.interface_prefix, "wg-");
     }
 }

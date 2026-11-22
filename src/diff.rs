@@ -104,31 +104,12 @@ pub fn passive_flag_is_true(raw: Option<&str>) -> bool {
     matches!(raw, Some("") | Some("true"))
 }
 
-/// Whether `interface` is something only this tool could have created on the `interface list
-/// member` table - either it's in the currently-desired interface set, or it starts with
-/// `interface_prefix`, the prefix the network gives its links' interfaces, or it is the raw
-/// internal id RouterOS substitutes once an interface referenced by a list member has already
-/// been deleted (`*<hex>`, unresolvable back to a name).
-/// Used by `mikrotik.rs`'s `read_list_members` to pre-filter `current` before it ever reaches
-/// [`list_members`] - anything else on the `LAN` list (e.g. a physical WAN/LAN interface) must
-/// never be considered for removal.
-pub fn is_our_list_member_footprint(
-    interface: &str,
-    desired_interfaces: &[String],
-    interface_prefix: &str,
-) -> bool {
-    desired_interfaces.iter().any(|d| d == interface)
-        || is_our_interface_name(interface, interface_prefix)
-}
-
-/// Whether `interface` is (or, via a raw orphaned id, once was) an interface of a link, which
-/// this tool itself creates under `interface_prefix` - shared by `mikrotik.rs`'s `read_list_members` (via
-/// [`is_our_list_member_footprint`]), `read_ip_addresses` (recognizing an `ip address` row left
-/// behind on a deleted `mesh-*` interface's now-unresolvable raw id, so it gets cleaned up instead
-/// of silently ignored), and `read_physically_connected_prefixes` (excluding the same orphaned
-/// rows from what would otherwise look like a real physically-connected LAN prefix).
-pub fn is_our_interface_name(interface: &str, interface_prefix: &str) -> bool {
-    interface.starts_with(interface_prefix) || is_raw_orphan_id(interface)
+/// Whether `interface` is this tool's: one of `ours` - the rows of `interface wireguard`, a table
+/// only this tool writes, and the interfaces it asks for - or the raw internal id RouterOS puts in
+/// place of an interface already deleted (`*<hex>`, unresolvable back to a name). A row on any
+/// other interface, a physical WAN or LAN port among them, is never considered for removal.
+pub fn is_ours(interface: &str, ours: &[String]) -> bool {
+    ours.iter().any(|our| our == interface) || is_raw_orphan_id(interface)
 }
 
 /// True for a leftover raw internal id (e.g. `*16`) an address gets orphaned on after this tool
@@ -356,7 +337,7 @@ impl HasId for CurrentListMember {
     }
 }
 
-/// `current` must already be pre-filtered via [`is_our_list_member_footprint`] (see the module
+/// `current` must already be pre-filtered via [`is_ours`] (see the module
 /// doc comment) - an unrelated `LAN` member (e.g. a physical WAN interface) must never reach this
 /// function, or it would be removed the moment it isn't also in `desired`.
 ///
@@ -1038,7 +1019,7 @@ mod list_members_tests {
 
     #[test]
     fn removes_stale_and_keeps_unrelated_out_of_the_plan_entirely() {
-        // is_our_list_member_footprint is what actually keeps an unrelated LAN member (e.g. a
+        // is_ours is what actually keeps an unrelated LAN member (e.g. a
         // physical WAN port) out of `current` before it ever reaches this function - proven
         // separately below. Here, given only our own rows, a no-longer-desired interface is
         // still removed.
@@ -1053,43 +1034,29 @@ mod list_members_tests {
         assert_eq!(plan.add, vec![desired("mesh-east")]);
     }
 
-    #[test]
-    fn footprint_check_excludes_unrelated_interfaces() {
-        assert!(!is_our_list_member_footprint("ether1-wan", &[], "mesh-"));
-        assert!(!is_our_list_member_footprint(
-            "bridge-lan",
-            &["mesh-east".to_string()],
-            "mesh-"
-        ));
+    fn ours(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
     }
 
     #[test]
-    fn footprint_check_includes_mesh_interfaces_and_desired_set() {
-        assert!(is_our_list_member_footprint("mesh-east", &[], "mesh-"));
-        assert!(is_our_list_member_footprint(
-            "router-lo",
-            &["router-lo".to_string()],
-            "mesh-"
-        ));
-    }
-
-    #[test]
-    fn an_interface_is_ours_by_the_prefix_the_network_gives_its_links() {
-        assert!(is_our_interface_name("wg-east", "wg-"));
-        assert!(is_our_list_member_footprint("wg-east", &[], "wg-"));
-        // Under another prefix, the name this tool once used by default is somebody else's.
-        assert!(!is_our_interface_name("mesh-east", "wg-"));
-        assert!(!is_our_list_member_footprint("mesh-east", &[], "wg-"));
+    fn an_interface_is_ours_only_if_it_is_one_of_ours() {
+        let ours = ours(&["e-east", "router-lo"]);
+        assert!(is_ours("e-east", &ours));
+        assert!(is_ours("router-lo", &ours));
+        // Named like the interfaces of the links, and still nobody's of ours.
+        assert!(!is_ours("ether1", &ours));
+        assert!(!is_ours("e-west", &ours));
+        assert!(!is_ours("bridge-lan", &ours));
     }
 
     #[test]
     fn footprint_check_includes_orphaned_raw_ids() {
         // Left behind by RouterOS once a wireguard interface this tool created was deleted -
         // must still be recognized as ours so it can be pruned, even though it no longer matches
-        // "mesh-*" or any currently-desired name.
-        assert!(is_our_list_member_footprint("*4A", &[], "mesh-"));
-        assert!(!is_our_list_member_footprint("*not-hex", &[], "mesh-"));
-        assert!(!is_our_list_member_footprint("*", &[], "mesh-"));
+        // any name of ours.
+        assert!(is_ours("*4A", &[]));
+        assert!(!is_ours("*not-hex", &[]));
+        assert!(!is_ours("*", &[]));
     }
 }
 

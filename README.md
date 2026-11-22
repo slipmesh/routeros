@@ -28,11 +28,14 @@ slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]
 
 Requires:
 
-- `slipmesh.yaml` in format version 2, with the node and every secret its configs need: the
-  `wireguard.private_key` of the node and of each of its peers. A file that is missing, malformed,
-  of format version 1, or lacks one of them is a fatal error before the device is touched; a
-  missing secret's refusal names `slipmesh mint`, which writes it. The `platform` document of
-  `routeros`, where there is one, takes no key. This tool checks only what its own node's configs
+- `slipmesh.yaml` in format version 2, with `mesh.interface_prefix`, the node, and every secret its
+  configs need: the `wireguard.private_key` of the node and of each of its peers. A file that is
+  missing or malformed, lacks one of them, or is of format version 1 is a fatal error before the
+  device is touched. The refusal of a missing key or of a file without `mesh.interface_prefix`
+  names `slipmesh mint`, which creates the key and writes the prefix. A file of version 1 is
+  converted as "Converting a file by hand" in sliplib's `docs/slipmesh-yaml-v1-to-v2.md` says,
+  the document its refusal names. The `platform` document of `routeros`, where there is one,
+  takes no key. This tool checks only what its own node's configs
   need: a file the Talos generator refuses for a Talos-only reason - a template, a patch document,
   an annotation - is still accepted here.
 - The device's API credentials in the environment:
@@ -71,13 +74,13 @@ device and diffed against the desired state before anything is written.
 
 A peer the device dials gets a persistent keepalive: the `persistent_keepalive` of its entry in
 the node's `awg` config, or 25 seconds, the interval of plain WireGuard, when the entry sets none;
-`0` sends none. RouterOS takes one interval, so an entry that sets a range is
-refused, naming the interface and the peer. A peer the device only waits for is sent none, and
-whatever its entry sets is not read.
+`0` sends none. A peer the device only waits for is sent none, and whatever its entry sets is not
+read.
 
 The interfaces of the node's links are named by the network's `mesh.interface_prefix` and the name
-of the peer's node, and by that prefix the tool knows an interface, and what an interface it no
-longer asks for left behind, as its own. A peer is named after its node.
+of the peer's node, and a peer is named after its node. The tool takes as its own the interfaces
+`interface wireguard` holds, a table only it writes, and the rows other tables hold on them, so
+that a prefix matching a port of the device takes nothing of that port.
 
 Tables this tool owns exclusively (`interface wireguard[/peers]`, `routing bfd configuration`,
 `routing ospf interface-template`, `routing bgp connection`) are converged remove-before-add, so a rename or a

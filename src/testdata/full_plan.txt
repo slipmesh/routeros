@@ -1,0 +1,208 @@
+DesiredState {
+    wireguard_interfaces: [
+        DesiredWireguardInterface {
+            name: "mesh-node-a",
+            listen_port: 51820,
+            private_key_b64: <redacted>,
+            disabled: false,
+            mtu: Some(
+                1420,
+            ),
+        },
+        DesiredWireguardInterface {
+            name: "rw-north",
+            listen_port: 51900,
+            private_key_b64: <redacted>,
+            disabled: false,
+            mtu: None,
+        },
+    ],
+    ip_addresses: [
+        DesiredIpAddress {
+            address: "198.51.100.1/32",
+            interface: "router-lo",
+            disabled: false,
+        },
+        DesiredIpAddress {
+            address: "203.0.113.1/32",
+            interface: "mesh-node-a",
+            disabled: false,
+        },
+        DesiredIpAddress {
+            address: "203.0.113.33/27",
+            interface: "rw-north",
+            disabled: false,
+        },
+    ],
+    ip_v6_addresses: [
+        DesiredIpv6Address {
+            address: "3fff::1/128",
+            interface: "router-lo",
+            advertise: false,
+            auto_link_local: None,
+            disabled: false,
+        },
+        DesiredIpv6Address {
+            address: "fe80::c612:ff/64",
+            interface: "router-lo",
+            advertise: false,
+            auto_link_local: Some(
+                false,
+            ),
+            disabled: false,
+        },
+        DesiredIpv6Address {
+            address: "fe80::c612:ff/64",
+            interface: "mesh-node-a",
+            advertise: false,
+            auto_link_local: Some(
+                false,
+            ),
+            disabled: false,
+        },
+    ],
+    wireguard_peers: [
+        DesiredWireguardPeer {
+            interface: "mesh-node-a",
+            name: "node-a",
+            public_key_b64: "<key of node-a>",
+            allowed_address: "0.0.0.0/0,::/0",
+            endpoint_address: Some(
+                "192.0.2.1",
+            ),
+            endpoint_port: Some(
+                51820,
+            ),
+            persistent_keepalive: Some(
+                25,
+            ),
+            disabled: false,
+        },
+        DesiredWireguardPeer {
+            interface: "rw-north",
+            name: "phone",
+            public_key_b64: "<key of phone>",
+            allowed_address: "203.0.113.34/32,3fff:9::2/128",
+            endpoint_address: None,
+            endpoint_port: None,
+            persistent_keepalive: None,
+            disabled: false,
+        },
+    ],
+    list_members: [
+        DesiredListMember {
+            list: "LAN",
+            interface: "mesh-node-a",
+            disabled: false,
+        },
+        DesiredListMember {
+            list: "LAN",
+            interface: "rw-north",
+            disabled: false,
+        },
+    ],
+    loopback_bridge: DesiredBridge {
+        name: "router-lo",
+        disabled: false,
+    },
+    ospf_instance: DesiredOspfInstance {
+        name: "default",
+        version: 3,
+        router_id: 198.51.100.1,
+        redistribute_connected: true,
+        disabled: false,
+    },
+    ospf_area: DesiredOspfArea {
+        name: "backbone",
+        area_id: "0.0.0.0",
+        instance: "default",
+        disabled: false,
+    },
+    ospf_interface_templates: [
+        DesiredOspfInterfaceTemplate {
+            interfaces: "router-lo",
+            use_bfd: false,
+            area: "backbone",
+            type_: None,
+            cost: None,
+            hello_interval: None,
+            dead_interval: None,
+            passive: true,
+            disabled: false,
+        },
+        DesiredOspfInterfaceTemplate {
+            interfaces: "mesh-node-a",
+            use_bfd: true,
+            area: "backbone",
+            type_: Some(
+                "ptp",
+            ),
+            cost: Some(
+                10,
+            ),
+            hello_interval: Some(
+                "10s",
+            ),
+            dead_interval: Some(
+                "40s",
+            ),
+            passive: false,
+            disabled: false,
+        },
+    ],
+    bfd_configurations: [
+        DesiredBfdConfiguration {
+            interfaces: "mesh-node-a",
+            min_rx: "300ms",
+            min_tx: "300ms",
+            multiplier: 5,
+        },
+    ],
+    bgp_networks: [
+        DesiredAddressListEntry {
+            list: "bgp-networks",
+            address: "192.0.2.0/24",
+            disabled: false,
+        },
+        DesiredAddressListEntry {
+            list: "bgp-networks",
+            address: "198.51.100.1",
+            disabled: false,
+        },
+        DesiredAddressListEntry {
+            list: "bgp-networks",
+            address: "203.0.113.192/26",
+            disabled: false,
+        },
+        DesiredAddressListEntry {
+            list: "bgp-networks",
+            address: "203.0.113.64/28",
+            disabled: false,
+        },
+        DesiredAddressListEntry {
+            list: "bgp-networks",
+            address: "not-a-prefix",
+            disabled: false,
+        },
+    ],
+    bgp_instance: DesiredBgpInstance {
+        name: "default",
+        as_number: 64512,
+        router_id: 198.51.100.1,
+        routing_table: "main",
+        disabled: false,
+    },
+    bgp_connections: [
+        DesiredBgpConnection {
+            name: "bgp-node-a",
+            instance: "default",
+            local_address: 3fff::1,
+            local_role: "ibgp",
+            remote_address: 3fff::2,
+            multihop: true,
+            afi: "ip",
+            output_network: "bgp-networks",
+            disabled: false,
+        },
+    ],
+}

@@ -381,6 +381,72 @@ mod tests {
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
 
+    /// Every key of both configs that reaches the device, as sliplib writes them.
+    fn full_configs() -> (AwgConfig, RouterConfig) {
+        let awg = format!(
+            "interfaces:
+  - name: mesh-node-a
+    listen_port: 51820
+    addresses: [\"fe80::c612:ff/64\", 203.0.113.1/32]
+    private_key: \"{own}\"
+    mtu: 1420
+    peers:
+      - public_key: \"{a}\"
+        name: node-a
+        endpoint: 192.0.2.1:51820
+  - name: rw-north
+    listen_port: 51900
+    addresses: [203.0.113.33/27]
+    private_key: \"{own}\"
+    peers:
+      - public_key: \"{b}\"
+        name: phone
+        allowed_ips: [203.0.113.34/32, \"3fff:9::2/128\"]
+",
+            own = wg_key("own"),
+            a = wg_key("node-a"),
+            b = wg_key("phone"),
+        );
+        let router = "node:
+  loopback_addresses: [198.51.100.1/32, \"3fff::1/128\"]
+bgp_as: 64512
+bgp_peers:
+  - {name: node-a, address: \"3fff::2\"}
+bfd: {}
+ospf_interfaces: [mesh-*, router-lo]
+direct_interfaces: [ether*, bridge-lan]
+learn: [203.0.113.64/26]
+announce: [{net: 203.0.113.192/26}]
+";
+        (
+            sliplib_yaml::from_str(&awg).unwrap(),
+            sliplib_yaml::from_str(router).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_device_plan_of_every_key_that_reaches_the_device_is_pinned() {
+        let (awg, router) = full_configs();
+        let physically_connected = [
+            ("ether1", "192.0.2.0/24"),
+            ("cni0", "203.0.113.64/28"),
+            ("wlan0", "198.18.0.0/24"),
+            ("ether2", "not-a-prefix"),
+        ]
+        .map(|(iface, prefix)| (iface.to_owned(), prefix.to_owned()));
+        let mut plan = format!(
+            "{:#?}\n",
+            desired_state(&awg, &router, &physically_connected).unwrap()
+        );
+        for label in ["node-a", "phone"] {
+            plan = plan.replace(&wg_key(label), &format!("<key of {label}>"));
+        }
+        if let Some(path) = std::env::var_os("WRITE_PLAN") {
+            std::fs::write(path, &plan).unwrap();
+        }
+        assert_eq!(plan, include_str!("testdata/full_plan.txt"));
+    }
+
     fn router_config() -> RouterConfig {
         RouterConfig {
             node: NodeIdentity {

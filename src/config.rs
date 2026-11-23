@@ -456,6 +456,22 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_gets_one_ospf_template_however_many_patterns_take_it_and_none_if_none_does() {
+        let awg = AwgConfig {
+            interfaces: vec![iface("mesh-2", 51820), iface("wg-3", 51821)],
+        };
+        let mut router = router_config();
+        router.ospf_interfaces = vec!["mesh-*".to_string(), "mesh-2".to_string()];
+        let state = desired_state(&awg, &router, &[]).unwrap();
+        let templates: Vec<&str> = state
+            .ospf_interface_templates
+            .iter()
+            .map(|t| t.interfaces.as_str())
+            .collect();
+        assert_eq!(templates, [LOOPBACK_BRIDGE, "mesh-2"]);
+    }
+
+    #[test]
     fn always_includes_the_loopback_addresses_and_singletons() {
         let state = desired_state(&AwgConfig::default(), &router_config(), &[]).unwrap();
         assert_eq!(state.ip_addresses.len(), 1);

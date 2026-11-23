@@ -22,7 +22,7 @@
 //! 14. `routing bgp connection` (exclusive).
 
 use crate::config::{self, DesiredState};
-use crate::diff::{Plan, SingletonOp};
+use crate::diff::{CurrentWireguardInterface, DesiredWireguardInterface, Plan, SingletonOp};
 use crate::mikrotik;
 use mikrotik_rs::MikrotikDevice;
 
@@ -103,6 +103,20 @@ async fn apply_singleton<D: Clone>(
     if apply { do_apply(op).await } else { Ok(()) }
 }
 
+/// The interfaces of the links: those asked for, and those `interface wireguard` holds, which only
+/// this tool writes.
+fn our_interfaces(
+    asked: &[DesiredWireguardInterface],
+    held: &[CurrentWireguardInterface],
+) -> Vec<String> {
+    asked
+        .iter()
+        .map(|interface| &interface.name)
+        .chain(held.iter().map(|interface| &interface.name))
+        .cloned()
+        .collect()
+}
+
 /// Reads, diffs, and (if `apply`) applies every RouterOS table in the order above. `apply =
 /// false` (i.e. `--check`) still performs every read/diff step - a real connection is required
 /// either way - it just skips every `apply_*` call. Returns a full report either way, so `--diff`
@@ -114,16 +128,9 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // The interfaces of the links, this tool's own: those `interface wireguard` holds, which only
-    // this tool writes, and those it asks for. Read before step 1, so that the members of an
-    // interface step 2 deletes go in the same run.
+    // Read before step 1, so that the members of an interface step 2 deletes go in the same run.
     let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
-    let ours: Vec<String> = desired
-        .wireguard_interfaces
-        .iter()
-        .map(|interface| interface.name.clone())
-        .chain(current_wg.iter().map(|interface| interface.name.clone()))
-        .collect();
+    let ours = our_interfaces(&desired.wireguard_interfaces, &current_wg);
 
     // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
     let current_list_members = mikrotik::read_list_members(device, &ours).await?;
@@ -268,4 +275,42 @@ pub async fn run(
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::wg_key;
+
+    fn row(pairs: &[(&str, &str)]) -> mikrotik::Row {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), Some(value.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn what_lies_on_an_interface_only_the_device_still_holds_goes_in_one_run() {
+        let held = CurrentWireguardInterface {
+            id: "*1".to_owned(),
+            name: "mesh-gone".to_owned(),
+            listen_port: 51820,
+            private_key_b64: wg_key("own").into(),
+            disabled: false,
+            mtu: None,
+        };
+        let ours = our_interfaces(&[], &[held]);
+
+        let member = row(&[(".id", "*2"), ("list", "LAN"), ("interface", "mesh-gone")]);
+        let members = mikrotik::our_list_members(&[member], &ours).unwrap();
+        assert_eq!(crate::diff::list_members(&members, &[]).remove, ["*2"]);
+
+        let address = row(&[
+            (".id", "*3"),
+            ("address", "198.51.100.9/32"),
+            ("interface", "mesh-gone"),
+        ]);
+        let addresses = mikrotik::our_ip_addresses(&[address], &ours).unwrap();
+        assert_eq!(crate::diff::ip_addresses(&addresses, &[]).remove, ["*3"]);
+    }
 }

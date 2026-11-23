@@ -20,7 +20,7 @@ use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-type Row = HashMap<String, Option<String>>;
+pub(crate) type Row = HashMap<String, Option<String>>;
 
 fn get<'a>(row: &'a Row, key: &str) -> Option<&'a str> {
     row.get(key).and_then(|v| v.as_deref())
@@ -401,7 +401,10 @@ fn footprint<T>(
         .collect()
 }
 
-fn our_ip_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
+pub(crate) fn our_ip_addresses(
+    rows: &[Row],
+    ours: &[String],
+) -> anyhow::Result<Vec<CurrentIpAddress>> {
     footprint(rows, parse_ip_address, |a| {
         crate::diff::is_ours(&a.interface, ours)
     })
@@ -514,7 +517,10 @@ pub async fn read_list_members(
     our_list_members(&print(device, LIST_MEMBER_PATH).await?, ours)
 }
 
-fn our_list_members(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentListMember>> {
+pub(crate) fn our_list_members(
+    rows: &[Row],
+    ours: &[String],
+) -> anyhow::Result<Vec<CurrentListMember>> {
     footprint(rows, parse_list_member, |m| {
         m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours)
     })

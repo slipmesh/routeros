@@ -679,6 +679,11 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_only_waited_for_is_sent_no_keepalive_whatever_its_entry_sets() {
+        assert_eq!(keepalive_desired(None, Some(10.into())).unwrap(), None);
+    }
+
+    #[test]
     fn a_dialed_peer_without_a_keepalive_of_its_own_takes_25() {
         assert_eq!(keepalive_desired(DIALED, None).unwrap(), Some(25));
     }

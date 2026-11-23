@@ -19,12 +19,12 @@ path = "src/main.rs"
 [dependencies]
 # Ours, from a release tag: sliplib is not published to crates.io.
 # slipmesh.yaml and a node's configs, computed from it.
-sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
-sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0", default-features = false }
-sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.20.0" }
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0" }
+sliplib-mesh = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0" }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0", default-features = false }
+sliplib-secrets = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0" }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.21.0" }
 mikrotik-rs = { version = "0.10.0", features = ["tokio-tls"] }
 
 anyhow = "1.0.104"
@@ -33,3 +33,6 @@ rustls = { version = "0.23.46", default-features = false, features = ["aws-lc-rs
 rustls-native-certs = "0.8.5"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -389,15 +389,22 @@ pub async fn read_ip_addresses(
     our_ip_addresses(&print(device, IP_ADDRESS_PATH).await?, ours)
 }
 
-/// Those of the `ip address` rows that are this tool's footprint.
-fn our_ip_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
+/// The rows `keep` takes; one that does not parse is kept, to be refused.
+fn footprint<T>(
+    rows: &[Row],
+    parse: impl Fn(&Row) -> anyhow::Result<T>,
+    keep: impl Fn(&T) -> bool,
+) -> anyhow::Result<Vec<T>> {
     rows.iter()
-        .map(parse_ip_address)
-        .filter(|r| match r {
-            Ok(a) => crate::diff::is_ours(&a.interface, ours),
-            Err(_) => true, // surface parse errors, don't silently swallow them
-        })
+        .map(parse)
+        .filter(|row| row.as_ref().map_or(true, &keep))
         .collect()
+}
+
+fn our_ip_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpAddress>> {
+    footprint(rows, parse_ip_address, |a| {
+        crate::diff::is_ours(&a.interface, ours)
+    })
 }
 
 /// Removals happen **before** adds - a value-level change on the same (interface, address) key
@@ -507,15 +514,10 @@ pub async fn read_list_members(
     our_list_members(&print(device, LIST_MEMBER_PATH).await?, ours)
 }
 
-/// Those of the `interface list member` rows that are this tool's footprint.
 fn our_list_members(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentListMember>> {
-    rows.iter()
-        .map(parse_list_member)
-        .filter(|r| match r {
-            Ok(m) => m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours),
-            Err(_) => true,
-        })
-        .collect()
+    footprint(rows, parse_list_member, |m| {
+        m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours)
+    })
 }
 
 pub async fn apply_list_members(
@@ -648,15 +650,10 @@ pub async fn read_ipv6_addresses(
     our_ipv6_addresses(&print(device, IPV6_ADDRESS_PATH).await?, ours)
 }
 
-/// Those of the `ipv6 address` rows that are this tool's footprint.
 fn our_ipv6_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    rows.iter()
-        .map(parse_ipv6_address)
-        .filter(|r| match r {
-            Ok(a) => crate::diff::is_ours(&a.interface, ours),
-            Err(_) => true, // surface parse errors, don't silently swallow them
-        })
-        .collect()
+    footprint(rows, parse_ipv6_address, |a| {
+        crate::diff::is_ours(&a.interface, ours)
+    })
 }
 
 /// Removals happen **before** adds. `diff::ipv6_addresses` keys on `(interface, address)`, so a

@@ -3,49 +3,40 @@
 
 use anyhow::Context;
 use sliplib_config::v2::{File, Platform};
-use sliplib_mesh::render::{self, NodeConfigs, node_configs};
-use sliplib_yaml::MultiDoc;
+use sliplib_mesh::Mesh;
+use sliplib_mesh::render::{NodeConfigs, node_configs};
+use sliplib_yaml::{Mapping, MultiDoc};
 use std::path::Path;
 
-/// `refusal`, with the command that creates the secret when a missing one is what it is about.
-fn with_its_cure(refusal: render::Error) -> anyhow::Error {
-    let lacks_a_secret = refusal.missing_secret().is_some();
-    let refusal = anyhow::Error::new(refusal);
-    if lacks_a_secret {
-        anyhow::anyhow!("{refusal:#} - `slipmesh mint` creates it")
-    } else {
-        refusal
+/// `routeros` has no settings.
+fn no_settings(files: &File) -> anyhow::Result<()> {
+    let Some(document) = files.platform(Platform::Routeros) else {
+        return Ok(());
+    };
+    let body: Mapping = document.read()?;
+    if let Some((key, _)) = body.into_iter().next() {
+        anyhow::bail!(
+            "{}: `routeros` has no settings, and this one holds {key:?} - take it out",
+            document.place()
+        );
     }
-}
-
-/// What `slipmesh.yaml` gives one node: its configs, and what the name of every interface of a
-/// link starts with.
-#[derive(Debug)]
-pub struct Node {
-    pub configs: NodeConfigs,
-    pub interface_prefix: String,
+    Ok(())
 }
 
 /// The configs of `node`, a node of `routeros`: this tool configures no other. An error reading or
 /// parsing the file names the file; one about the node or a secret its configs need names the
 /// node or link.
-pub fn read_node(path: &Path, node: &str) -> anyhow::Result<Node> {
+pub fn read_node(path: &Path, node: &str) -> anyhow::Result<NodeConfigs> {
     let reading = || format!("reading {}", path.display());
     let files = File::read(&MultiDoc::read(path)?).with_context(reading)?;
-    // `routeros` has no settings: a key in its `platform` document is one nothing reads.
-    files.routeros_settings().with_context(reading)?;
-    let network = sliplib_mesh::v2::lower(&files).with_context(reading)?;
+    no_settings(&files).with_context(reading)?;
+    let network = Mesh::of(&files).with_context(reading)?;
     let platform = network.node(node)?.platform;
     anyhow::ensure!(
         platform == Platform::Routeros,
         "node {node:?} is a `{platform}` node, which this tool does not configure"
     );
-    let resolved = sliplib_mesh::secrets::read(&network);
-    let configs = node_configs(&network, node, &resolved).map_err(with_its_cure)?;
-    Ok(Node {
-        configs,
-        interface_prefix: network.interface_prefix,
-    })
+    Ok(node_configs(&network, node)?)
 }
 
 #[cfg(test)]
@@ -91,35 +82,26 @@ nodes:
         )
     }
 
-    /// A `slipmesh.yaml` in a directory of its own, removed with it when the test is done.
-    struct Written(std::path::PathBuf);
+    /// In a directory of its own, gone with the value.
+    struct Written(tempfile::TempDir);
 
     impl Written {
         fn path(&self) -> std::path::PathBuf {
-            self.0.join("slipmesh.yaml")
+            self.0.path().join("slipmesh.yaml")
         }
     }
 
-    impl Drop for Written {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn written(name: &str, text: &str) -> Written {
-        let dir =
-            std::env::temp_dir().join(format!("routeros-slipmesh-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = Written(dir);
+    fn written(text: &str) -> Written {
+        let file = Written(tempfile::tempdir().unwrap());
         std::fs::write(file.path(), text).unwrap();
         file
     }
 
     #[test]
     fn a_nodes_configs_come_from_slipmesh_yaml() {
-        let file = written("configs", &fixture());
+        let file = written(&fixture());
         let path = file.path();
-        let Node { configs, .. } = read_node(&path, "router1").unwrap();
+        let configs = read_node(&path, "router1").unwrap();
         assert_eq!(configs.router.bgp_as, 64512);
         assert_eq!(configs.router.direct_interfaces, ["bridge-lan"]);
         let [iface] = configs.awg.interfaces.as_slice() else {
@@ -136,7 +118,7 @@ nodes:
 
     #[test]
     fn a_node_the_file_does_not_have_is_refused_naming_it() {
-        let file = written("unknown", &fixture());
+        let file = written(&fixture());
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router2").err().unwrap());
         assert!(err.contains("router2"), "{err}");
@@ -153,7 +135,7 @@ nodes:
 
     #[test]
     fn a_file_that_does_not_read_as_slipmesh_yaml_is_refused_naming_it() {
-        let file = written("malformed", &fixture().replace("  kind: network\n", ""));
+        let file = written(&fixture().replace("  kind: network\n", ""));
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
         assert!(
@@ -168,7 +150,7 @@ nodes:
             &format!("    wireguard: {{private_key: \"{}\"}}\n", wg_key("node-a")),
             "",
         );
-        let file = written("no-peer-key", &fixture);
+        let file = written(&fixture);
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
         assert!(
@@ -180,7 +162,7 @@ nodes:
 
     #[test]
     fn a_file_that_is_not_yaml_is_refused_naming_it() {
-        let file = written("not-yaml", "slipmesh: [unterminated\n");
+        let file = written("slipmesh: [unterminated\n");
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
         assert!(err.contains(&*path.to_string_lossy()), "{err}");
@@ -188,7 +170,7 @@ nodes:
 
     #[test]
     fn a_node_of_another_platform_is_refused_naming_its_platform() {
-        let file = written("other-platform", &fixture());
+        let file = written(&fixture());
         let err = format!("{:#}", read_node(&file.path(), "node-a").err().unwrap());
         assert!(err.contains("node-a") && err.contains("talos"), "{err}");
     }
@@ -199,29 +181,28 @@ nodes:
             "{}---\nslipmesh: {{kind: platform, platform: routeros}}\nmetrics: {{}}\n",
             fixture()
         );
-        let file = written("routeros-settings", &with_settings);
+        let file = written(&with_settings);
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(err.contains("metrics"), "{err}");
+        assert!(
+            err.contains("the `kind: platform` document at line") && err.contains("metrics"),
+            "{err}"
+        );
         assert!(
             err.contains(&format!("reading {}", path.display())),
             "{err}"
         );
         // Without the key, the document stands.
         let without = with_settings.replace("metrics: {}\n", "");
-        let file = written("routeros-settings-empty", &without);
+        let file = written(&without);
         read_node(&file.path(), "router1").unwrap();
     }
 
     #[test]
     fn the_prefix_of_the_links_interfaces_is_the_one_the_file_sets() {
-        let file = written(
-            "prefix",
-            &fixture().replace("interface_prefix: mesh-", "interface_prefix: wg-"),
-        );
-        let node = read_node(&file.path(), "router1").unwrap();
-        assert_eq!(node.interface_prefix, "wg-");
-        assert_eq!(node.configs.awg.interfaces[0].name, "wg-node-a");
+        let file = written(&fixture().replace("interface_prefix: mesh-", "interface_prefix: wg-"));
+        let configs = read_node(&file.path(), "router1").unwrap();
+        assert_eq!(configs.awg.interfaces[0].name, "wg-node-a");
     }
 
     #[test]
@@ -230,7 +211,7 @@ nodes:
             &format!("    wireguard: {{private_key: \"{}\"}}\n", wg_key("node-a")),
             "    wireguard: {private_key: not a key}\n",
         );
-        let file = written("not-a-key", &fixture);
+        let file = written(&fixture);
         let err = format!("{:#}", read_node(&file.path(), "router1").err().unwrap());
         assert!(err.contains("node-a"), "{err}");
         assert!(!err.contains("slipmesh mint"), "{err}");
@@ -242,14 +223,9 @@ nodes:
             "wireguard: {port: 51820}",
             "wireguard: {port: 51820, persistent_keepalive: 10}",
         );
-        let file = written("keepalive", &fixture);
-        let Node {
-            configs,
-            interface_prefix,
-        } = read_node(&file.path(), "router1").unwrap();
-        let desired =
-            crate::config::desired_state(&configs.awg, &configs.router, &[], &interface_prefix)
-                .unwrap();
+        let file = written(&fixture);
+        let configs = read_node(&file.path(), "router1").unwrap();
+        let desired = crate::config::desired_state(&configs.awg, &configs.router, &[]).unwrap();
         let [peer] = desired.wireguard_peers.as_slice() else {
             panic!("{:?}", desired.wireguard_peers);
         };

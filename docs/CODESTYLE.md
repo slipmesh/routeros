@@ -51,10 +51,13 @@
   error added as text (`map_err(|e| anyhow!("…: {e}"))`); some add it as a cause with
   `.context(...)`.
 - Three things are skipped without stopping the run: a value read back from the device that is
-  missing or does not parse falls back to its default in a few places, `config` skips a `learn`
-  range it cannot parse, and `mikrotik` skips a physically-connected address it cannot parse, the
-  last two with a warning.
+  missing or does not parse falls back to its default in a few places, `config` matches no `learn`
+  range against a physically-connected prefix it cannot parse, and `mikrotik` skips a
+  physically-connected address it cannot parse, the last two with a warning.
 - `unwrap`/`expect` only in tests.
+- A type read from input has no `serde(flatten)`, `untagged` or internal `tag`: serde reads them
+  through a buffer, and the refusal loses its key and line. Where one text holds several types'
+  keys, each type is read from the text on its own.
 
 ## Tests
 

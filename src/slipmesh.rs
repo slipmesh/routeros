@@ -5,7 +5,7 @@ use anyhow::Context;
 use sliplib_config::v2::{File, Platform};
 use sliplib_mesh::Mesh;
 use sliplib_mesh::render::{NodeConfigs, node_configs};
-use sliplib_yaml::{Mapping, MultiDoc};
+use sliplib_yaml::Mapping;
 use std::path::Path;
 
 /// `routeros` has no settings.
@@ -30,14 +30,10 @@ fn no_settings(files: &File) -> anyhow::Result<()> {
 /// node or link.
 pub fn read_node(path: &Path, node: &str) -> anyhow::Result<NodeConfigs> {
     let reading = || format!("reading {}", path.display());
-    let files = File::read(&MultiDoc::read(path)?).with_context(reading)?;
+    let files = File::open(path)?;
     no_settings(&files).with_context(reading)?;
     let network = Mesh::of(&files).with_context(reading)?;
-    let platform = network.node(node)?.platform;
-    anyhow::ensure!(
-        platform == Platform::Routeros,
-        "node {node:?} is a `{platform}` node, which this tool does not configure"
-    );
+    network.node_on(node, Platform::Routeros)?;
     Ok(node_configs(&network, node)?)
 }
 
@@ -105,7 +101,13 @@ nodes:
         let path = file.path();
         let configs = read_node(&path, "router1").unwrap();
         assert_eq!(configs.router.bgp_as, 64512);
-        assert_eq!(configs.router.direct_interfaces, ["bridge-lan"]);
+        let direct: Vec<&str> = configs
+            .router
+            .direct_interfaces
+            .iter()
+            .map(|pattern| pattern.as_str())
+            .collect();
+        assert_eq!(direct, ["bridge-lan"]);
         let [iface] = configs.awg.interfaces.as_slice() else {
             panic!("{:?}", configs.awg.interfaces);
         };

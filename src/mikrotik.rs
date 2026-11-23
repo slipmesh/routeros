@@ -17,6 +17,8 @@ use crate::diff::{
 };
 use mikrotik_rs::proto::command::Cmd;
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
+use sliplib_config::router::ROUTER_LOOPBACK;
+use sliplib_net::Ipv4Net;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -454,16 +456,12 @@ pub async fn apply_ip_addresses(
 /// `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
-    loopback_bridge: &str,
-) -> anyhow::Result<Vec<(String, String)>> {
-    physically_connected(&print(device, IP_ADDRESS_PATH).await?, loopback_bridge)
+) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
+    physically_connected(&print(device, IP_ADDRESS_PATH).await?)
 }
 
 /// The physically-connected subnets the `ip address` rows give, each by its interface.
-fn physically_connected(
-    rows: &[Row],
-    loopback_bridge: &str,
-) -> anyhow::Result<Vec<(String, String)>> {
+fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
     let mut prefixes = Vec::new();
     for row in rows {
         let a = parse_ip_address(row)?;
@@ -474,7 +472,7 @@ fn physically_connected(
         // decides whether any given prefix gets announced, this is just the candidate list. Only a
         // raw internal id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge
         // itself are excluded - neither is ever announce-worthy.
-        if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == loopback_bridge {
+        if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == ROUTER_LOOPBACK {
             continue;
         }
         match address_to_network(&a.address) {
@@ -490,8 +488,8 @@ fn physically_connected(
 /// Normalizes a host address-with-prefix (as configured on an interface, e.g. `"203.0.113.1/27"`)
 /// to its containing network base (`"203.0.113.0/27"`) - `ip address` rows carry the host
 /// address, not the network, but a BGP-announced prefix must be the network itself.
-fn address_to_network(address: &str) -> anyhow::Result<String> {
-    Ok(sliplib_net::parse_ipv4(address)?.trunc().to_string())
+fn address_to_network(address: &str) -> anyhow::Result<Ipv4Net> {
+    Ok(sliplib_net::parse_ipv4(address)?.trunc())
 }
 
 // ── interface list member ──
@@ -1278,11 +1276,11 @@ mod tests {
     #[test]
     fn address_to_network_normalizes_host_address_to_network_base() {
         assert_eq!(
-            address_to_network("203.0.113.37/27").unwrap(),
+            address_to_network("203.0.113.37/27").unwrap().to_string(),
             "203.0.113.32/27"
         );
         assert_eq!(
-            address_to_network("198.51.100.1/32").unwrap(),
+            address_to_network("198.51.100.1/32").unwrap().to_string(),
             "198.51.100.1/32"
         );
     }
@@ -1553,7 +1551,11 @@ mod tests {
             ])
         })
         .collect();
-        let connected = physically_connected(&rows, "router-lo").unwrap();
+        let connected: Vec<(String, String)> = physically_connected(&rows)
+            .unwrap()
+            .into_iter()
+            .map(|(iface, net)| (iface, net.to_string()))
+            .collect();
         assert_eq!(
             connected,
             [
@@ -1561,7 +1563,7 @@ mod tests {
                 ("wg-east".to_owned(), "198.51.100.129/32".to_owned()),
             ]
         );
-        assert!(physically_connected(&[row(&[(".id", "*1")])], "router-lo").is_err());
+        assert!(physically_connected(&[row(&[(".id", "*1")])]).is_err());
     }
 
     #[test]

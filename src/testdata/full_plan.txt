@@ -79,6 +79,22 @@ DesiredState {
             disabled: false,
         },
         DesiredWireguardPeer {
+            interface: "mesh-node-a",
+            name: "node-c",
+            public_key_b64: "<key of node-c>",
+            allowed_address: "0.0.0.0/0,::/0",
+            endpoint_address: Some(
+                "192.0.2.3",
+            ),
+            endpoint_port: Some(
+                51820,
+            ),
+            persistent_keepalive: Some(
+                15,
+            ),
+            disabled: false,
+        },
+        DesiredWireguardPeer {
             interface: "rw-north",
             name: "phone",
             public_key_b64: "<key of phone>",
@@ -86,6 +102,22 @@ DesiredState {
             endpoint_address: None,
             endpoint_port: None,
             persistent_keepalive: None,
+            disabled: false,
+        },
+        DesiredWireguardPeer {
+            interface: "rw-north",
+            name: "hub",
+            public_key_b64: "<key of hub>",
+            allowed_address: "0.0.0.0/0,::/0",
+            endpoint_address: Some(
+                "192.0.2.4",
+            ),
+            endpoint_port: Some(
+                51900,
+            ),
+            persistent_keepalive: Some(
+                20,
+            ),
             disabled: false,
         },
     ],
@@ -177,11 +209,6 @@ DesiredState {
         DesiredAddressListEntry {
             list: "bgp-networks",
             address: "203.0.113.64/28",
-            disabled: false,
-        },
-        DesiredAddressListEntry {
-            list: "bgp-networks",
-            address: "not-a-prefix",
             disabled: false,
         },
     ],

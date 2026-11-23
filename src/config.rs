@@ -11,7 +11,7 @@ use crate::diff::{
 use crate::sanitize::validate_endpoint;
 use sliplib_config::awg::{AwgConfig, InterfaceEntry, PeerEntry};
 use sliplib_config::router::{ROUTER_LOOPBACK, RouterConfig};
-use sliplib_net::{IpNet, Ipv6Net};
+use sliplib_net::{IpNet, Ipv4Net, Ipv6Net};
 use std::collections::BTreeSet;
 
 pub const LAN_LIST: &str = "LAN";
@@ -84,7 +84,7 @@ fn parse_endpoint(endpoint: &str) -> anyhow::Result<(String, u16)> {
 pub fn desired_state(
     awg: &AwgConfig,
     router: &RouterConfig,
-    physically_connected: &[(String, String)],
+    physically_connected: &[(String, Ipv4Net)],
 ) -> anyhow::Result<DesiredState> {
     let loopbacks = router.node.loopback_addresses;
     let (own_loopback, own_ipv6_loopback) = (loopbacks.ipv4.0.addr(), loopbacks.ipv6.0.addr());
@@ -248,15 +248,9 @@ pub fn desired_state(
             .direct_interfaces
             .iter()
             .any(|pattern| pattern.matches(iface));
-        let learned = match sliplib_net::parse_ipv4(prefix) {
-            Ok(prefix) => router.learn.iter().any(|range| range.0.contains(&prefix)),
-            Err(e) => {
-                tracing::warn!(prefix = %prefix, error = %e, "skipping an unparsable connected prefix for learn");
-                false
-            }
-        };
+        let learned = router.learn.iter().any(|range| range.0.contains(prefix));
         if direct || learned {
-            bgp_network_addrs.insert(prefix.clone());
+            bgp_network_addrs.insert(prefix.to_string());
         }
     }
     for entry in &router.announce {
@@ -341,6 +335,12 @@ mod tests {
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    fn connected(list: &[(&str, &str)]) -> Vec<(String, Ipv4Net)> {
+        list.iter()
+            .map(|(iface, prefix)| ((*iface).to_owned(), prefix.parse().unwrap()))
+            .collect()
+    }
+
     /// Every key of both configs that reaches the device, as sliplib writes them.
     fn full_configs() -> (AwgConfig, RouterConfig) {
         let awg = format!(
@@ -348,22 +348,33 @@ mod tests {
   - name: mesh-node-a
     listen_port: 51820
     addresses: [\"fe80::c612:ff/64\", 203.0.113.1/32]
-    private_key: \"{own}\"
+    private_key: \"{mesh}\"
     mtu: 1420
     peers:
       - public_key: \"{a}\"
         name: node-a
         endpoint: 192.0.2.1:51820
+      - public_key: \"{c}\"
+        name: node-c
+        endpoint: 192.0.2.3:51820
+        persistent_keepalive: 15
   - name: rw-north
     listen_port: 51900
     addresses: [203.0.113.33/27]
-    private_key: \"{own}\"
+    private_key: \"{rw}\"
+    obfuscation: {{jc: 4, jmin: 40, jmax: 70}}
     peers:
       - public_key: \"{b}\"
         name: phone
         allowed_ips: [203.0.113.34/32, \"3fff:9::2/128\"]
+      - public_key: \"{d}\"
+        name: hub
+        endpoint: 192.0.2.4:51900
 ",
-            own = wg_key("own"),
+            mesh = wg_key("mesh"),
+            rw = wg_key("rw"),
+            c = wg_key("node-c"),
+            d = wg_key("hub"),
             a = wg_key("node-a"),
             b = wg_key("phone"),
         );
@@ -387,20 +398,23 @@ announce: [{net: 203.0.113.192/26}]
     #[test]
     fn the_device_plan_of_every_key_that_reaches_the_device_is_pinned() {
         let (awg, router) = full_configs();
-        let physically_connected = [
+        let physically_connected = connected(&[
             ("ether1", "192.0.2.0/24"),
             ("cni0", "203.0.113.64/28"),
             ("wlan0", "198.18.0.0/24"),
-            ("ether2", "not-a-prefix"),
-        ]
-        .map(|(iface, prefix)| (iface.to_owned(), prefix.to_owned()));
-        let mut plan = format!(
-            "{:#?}\n",
-            desired_state(&awg, &router, &physically_connected).unwrap()
-        );
-        for label in ["node-a", "phone"] {
+        ]);
+        let state = desired_state(&awg, &router, &physically_connected).unwrap();
+        let keys: Vec<&str> = state
+            .wireguard_interfaces
+            .iter()
+            .map(|iface| iface.private_key_b64.expose())
+            .collect();
+        assert_eq!(keys, [wg_key("mesh"), wg_key("rw")]);
+        let mut plan = format!("{state:#?}\n");
+        for label in ["node-a", "node-c", "phone", "hub"] {
             plan = plan.replace(&wg_key(label), &format!("<key of {label}>"));
         }
+        // Set, it rewrites the snapshot.
         if let Some(path) = std::env::var_os("WRITE_PLAN") {
             std::fs::write(path, &plan).unwrap();
         }
@@ -577,7 +591,7 @@ announce: [{net: 203.0.113.192/26}]
     }
 
     #[test]
-    fn mesh_interface_addresses_are_applied_verbatim_from_the_awg_config() {
+    fn mesh_interface_addresses_are_applied_as_the_awg_config_gives_them() {
         let mut i1 = iface("mesh-2", 51820);
         i1.addresses = sliplib_yaml::from_str(r#"["fe80::c612:ff/64"]"#).unwrap();
         let mut i2 = iface("mesh-3", 51821);
@@ -729,7 +743,7 @@ announce: [{net: 203.0.113.192/26}]
     }
 
     #[test]
-    fn explicit_allowed_ips_are_joined_verbatim() {
+    fn explicit_allowed_ips_are_joined_in_order() {
         let mut i = iface("mesh-9", 51900);
         let mut p = peer("rw-pub", None);
         p.allowed_ips = Some(sliplib_yaml::from_str(r#"["203.0.113.165/32"]"#).unwrap());
@@ -755,10 +769,8 @@ announce: [{net: 203.0.113.192/26}]
     fn direct_interfaces_glob_selects_which_physically_connected_prefixes_are_announced() {
         let mut router = router_config();
         router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
-        let physically_connected = vec![
-            ("ether1".to_string(), "203.0.113.0/27".to_string()),
-            ("wan0".to_string(), "192.0.2.0/24".to_string()),
-        ];
+        let physically_connected =
+            connected(&[("ether1", "203.0.113.0/27"), ("wan0", "192.0.2.0/24")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
@@ -778,7 +790,7 @@ announce: [{net: 203.0.113.192/26}]
     fn learn_range_selects_a_physically_connected_prefix_not_matched_by_direct_interfaces() {
         let mut router = router_config();
         router.learn = sliplib_yaml::from_str(r#"["203.0.113.0/25"]"#).unwrap();
-        let physically_connected = vec![("cni0".to_string(), "203.0.113.32/27".to_string())];
+        let physically_connected = connected(&[("cni0", "203.0.113.32/27")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
@@ -792,12 +804,11 @@ announce: [{net: 203.0.113.192/26}]
     fn a_learn_range_selects_only_prefixes_inside_it() {
         let mut router = router_config();
         router.learn = sliplib_yaml::from_str(r#"["203.0.113.5/26", "203.0.113.96/28"]"#).unwrap();
-        let physically_connected = vec![
-            ("cni0".to_string(), "203.0.113.32/27".to_string()),
-            ("cni1".to_string(), "203.0.113.64/27".to_string()),
-            ("cni2".to_string(), "203.0.113.96/27".to_string()),
-            ("cni3".to_string(), "not a prefix".to_string()),
-        ];
+        let physically_connected = connected(&[
+            ("cni0", "203.0.113.32/27"),
+            ("cni1", "203.0.113.64/27"),
+            ("cni2", "203.0.113.96/27"),
+        ]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         let announced_prefixes: Vec<&str> = state
             .bgp_networks
@@ -828,7 +839,7 @@ announce: [{net: 203.0.113.192/26}]
     fn unmatched_physically_connected_prefixes_are_not_announced() {
         let mut router = router_config();
         router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
-        let physically_connected = vec![("wan0".to_string(), "192.0.2.0/24".to_string())];
+        let physically_connected = connected(&[("wan0", "192.0.2.0/24")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         // Only own loopback is announced - the WAN prefix matches nothing.
         assert_eq!(state.bgp_networks.len(), 1);

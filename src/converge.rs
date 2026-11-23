@@ -22,7 +22,7 @@
 //! 14. `routing bgp connection` (exclusive).
 
 use crate::config::{self, DesiredState};
-use crate::diff::{Plan, SingletonOp};
+use crate::diff::{CurrentWireguardInterface, DesiredWireguardInterface, Plan, SingletonOp};
 use crate::mikrotik;
 use mikrotik_rs::MikrotikDevice;
 
@@ -103,19 +103,18 @@ async fn apply_singleton<D: Clone>(
     if apply { do_apply(op).await } else { Ok(()) }
 }
 
-/// The interfaces of the links that are this tool's: those it asks for, `asked`, then those
-/// `current`, the rows of `interface wireguard`, holds besides, each once.
+/// The interfaces of the links: those asked for, and those `interface wireguard` holds, which only
+/// this tool writes.
 fn our_interfaces(
-    asked: Vec<String>,
-    current: &[crate::diff::CurrentWireguardInterface],
+    asked: &[DesiredWireguardInterface],
+    held: &[CurrentWireguardInterface],
 ) -> Vec<String> {
-    let mut ours = asked;
-    for current in current {
-        if !ours.contains(&current.name) {
-            ours.push(current.name.clone());
-        }
-    }
-    ours
+    asked
+        .iter()
+        .map(|interface| &interface.name)
+        .chain(held.iter().map(|interface| &interface.name))
+        .cloned()
+        .collect()
 }
 
 /// Reads, diffs, and (if `apply`) applies every RouterOS table in the order above. `apply =
@@ -129,16 +128,9 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // The interfaces of the links, this tool's own: those `interface wireguard` holds, which only
-    // this tool writes, and those it asks for. Read before step 1, so that the members of an
-    // interface step 2 deletes go in the same run.
+    // Read before step 1, so that the members of an interface step 2 deletes go in the same run.
     let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
-    let asked = desired
-        .wireguard_interfaces
-        .iter()
-        .map(|i| i.name.clone())
-        .collect();
-    let ours = our_interfaces(asked, &current_wg);
+    let ours = our_interfaces(&desired.wireguard_interfaces, &current_wg);
 
     // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
     let current_list_members = mikrotik::read_list_members(device, &ours).await?;
@@ -288,26 +280,37 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::CurrentWireguardInterface;
     use crate::test_support::wg_key;
 
-    fn on_the_device(name: &str) -> CurrentWireguardInterface {
-        CurrentWireguardInterface {
+    fn row(pairs: &[(&str, &str)]) -> mikrotik::Row {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), Some(value.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn what_lies_on_an_interface_only_the_device_still_holds_goes_in_one_run() {
+        let held = CurrentWireguardInterface {
             id: "*1".to_owned(),
-            name: name.to_owned(),
+            name: "mesh-gone".to_owned(),
             listen_port: 51820,
             private_key_b64: wg_key("own").into(),
             disabled: false,
             mtu: None,
-        }
-    }
+        };
+        let ours = our_interfaces(&[], &[held]);
 
-    #[test]
-    fn our_interfaces_are_those_asked_for_then_those_the_device_holds_besides_each_once() {
-        let ours = our_interfaces(
-            vec!["wg-east".to_owned()],
-            &[on_the_device("mesh-east"), on_the_device("wg-east")],
-        );
-        assert_eq!(ours, ["wg-east", "mesh-east"]);
+        let member = row(&[(".id", "*2"), ("list", "LAN"), ("interface", "mesh-gone")]);
+        let members = mikrotik::our_list_members(&[member], &ours).unwrap();
+        assert_eq!(crate::diff::list_members(&members, &[]).remove, ["*2"]);
+
+        let address = row(&[
+            (".id", "*3"),
+            ("address", "198.51.100.9/32"),
+            ("interface", "mesh-gone"),
+        ]);
+        let addresses = mikrotik::our_ip_addresses(&[address], &ours).unwrap();
+        assert_eq!(crate::diff::ip_addresses(&addresses, &[]).remove, ["*3"]);
     }
 }

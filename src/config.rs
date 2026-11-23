@@ -30,19 +30,10 @@ const OSPF_DEAD_INTERVAL: &str = "40s";
 /// `afi=ipv6` only and a peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
 const BGP_AFI_IPV4: &str = "ip";
 
-/// The keepalive of a peer the device dials, as its interface gives it. RouterOS takes one
-/// interval, so a range is refused. `0` sends none, and is desired as none: the device reads the
-/// two back alike.
-fn keepalive_seconds(interface: &InterfaceEntry, peer: &PeerEntry) -> anyhow::Result<Option<u16>> {
-    let interval = interface.keepalive_of(peer);
-    anyhow::ensure!(
-        interval.lo() == interval.hi(),
-        "interface {:?}, peer {:?}: persistent_keepalive {interval} is a range, and \
-         RouterOS takes one number of seconds",
-        interface.name,
-        peer.public_key
-    );
-    Ok(Some(interval.lo()).filter(|&seconds| seconds != 0))
+/// A link to a `routeros` node is `wireguard`, whose keepalive is one number. `0` is desired as
+/// none: the device reads the two back alike.
+fn keepalive_seconds(interface: &InterfaceEntry, peer: &PeerEntry) -> Option<u16> {
+    Some(interface.keepalive_of(peer).lo()).filter(|&seconds| seconds != 0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,7 +118,6 @@ pub fn desired_state(
     awg: &AwgConfig,
     router: &RouterConfig,
     physically_connected: &[(String, String)],
-    interface_prefix: &str,
 ) -> anyhow::Result<DesiredState> {
     let (own_loopback, own_ipv6_loopback) = own_loopbacks(router)?;
 
@@ -171,7 +161,7 @@ pub fn desired_state(
             let (endpoint_address, endpoint_port, persistent_keepalive) = match &peer.endpoint {
                 Some(endpoint) => {
                     let (host, port) = parse_endpoint(endpoint)?;
-                    let keepalive = keepalive_seconds(iface, peer)?;
+                    let keepalive = keepalive_seconds(iface, peer);
                     (Some(host), Some(port), keepalive)
                 }
                 // NAT'd peer with no reachable endpoint: no Endpoint/PersistentKeepalive, wait for
@@ -180,11 +170,8 @@ pub fn desired_state(
             };
             wireguard_peers.push(DesiredWireguardPeer {
                 interface: iface.name.clone(),
-                name: iface
-                    .name
-                    .strip_prefix(interface_prefix)
-                    .unwrap_or(&iface.name)
-                    .to_string(),
+                // sliplib names every peer it renders.
+                name: peer.name.clone().unwrap_or_default(),
                 public_key_b64: peer.public_key.clone(),
                 allowed_address: peer
                     .allowed_ips
@@ -407,7 +394,6 @@ mod tests {
             announce: vec![],
             bypass: None,
             bfd: None,
-            metrics: None,
         }
     }
 
@@ -418,7 +404,6 @@ mod tests {
             addresses: vec![],
             private_key: wg_key("own").into(),
             obfuscation: Default::default(),
-            handshake_stale_secs: None,
             mtu: None,
             peers: vec![],
         }
@@ -427,7 +412,7 @@ mod tests {
     fn peer(key_label: &str, endpoint: Option<&str>) -> PeerEntry {
         PeerEntry {
             public_key: wg_key(key_label),
-            name: None,
+            name: Some(key_label.to_owned()),
             endpoint: endpoint.map(str::to_string),
             allowed_ips: None,
             persistent_keepalive: None,
@@ -441,7 +426,6 @@ mod tests {
     fn bfd_configures_and_requests_only_the_mesh_interfaces_and_only_when_asked() {
         let awg = AwgConfig {
             interfaces: vec![iface("mesh-2", 51820)],
-            ..Default::default()
         };
         let mut router = router_config();
         router.ospf_interfaces = vec!["mesh-*".to_string()];
@@ -450,7 +434,7 @@ mod tests {
             min_rx_ms: 500,
             ..Default::default()
         });
-        let on = desired_state(&awg, &router, &[], "mesh-").unwrap();
+        let on = desired_state(&awg, &router, &[]).unwrap();
         assert_eq!(on.bfd_configurations.len(), 1);
         assert_eq!(on.bfd_configurations[0].interfaces, "mesh-2");
         assert_eq!(on.bfd_configurations[0].min_rx, "500ms");
@@ -466,14 +450,30 @@ mod tests {
         }
 
         router.bfd = None;
-        let off = desired_state(&awg, &router, &[], "mesh-").unwrap();
+        let off = desired_state(&awg, &router, &[]).unwrap();
         assert!(off.bfd_configurations.is_empty());
         assert!(off.ospf_interface_templates.iter().all(|t| !t.use_bfd));
     }
 
     #[test]
+    fn an_interface_gets_one_ospf_template_however_many_patterns_take_it_and_none_if_none_does() {
+        let awg = AwgConfig {
+            interfaces: vec![iface("mesh-2", 51820), iface("wg-3", 51821)],
+        };
+        let mut router = router_config();
+        router.ospf_interfaces = vec!["mesh-*".to_string(), "mesh-2".to_string()];
+        let state = desired_state(&awg, &router, &[]).unwrap();
+        let templates: Vec<&str> = state
+            .ospf_interface_templates
+            .iter()
+            .map(|t| t.interfaces.as_str())
+            .collect();
+        assert_eq!(templates, [LOOPBACK_BRIDGE, "mesh-2"]);
+    }
+
+    #[test]
     fn always_includes_the_loopback_addresses_and_singletons() {
-        let state = desired_state(&AwgConfig::default(), &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&AwgConfig::default(), &router_config(), &[]).unwrap();
         assert_eq!(state.ip_addresses.len(), 1);
         assert_eq!(state.ip_addresses[0].address, "198.51.100.1/32");
         assert_eq!(state.ip_addresses[0].interface, LOOPBACK_BRIDGE);
@@ -499,9 +499,8 @@ mod tests {
         with_mtu.mtu = Some(1440);
         let awg = AwgConfig {
             interfaces: vec![with_mtu, iface("mesh-3", 51821)],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
         let mtus: Vec<_> = state.wireguard_interfaces.iter().map(|i| i.mtu).collect();
         assert_eq!(mtus, [Some(1440), None]);
     }
@@ -513,11 +512,10 @@ mod tests {
             .push(peer("east-pub", Some("east.example.com:51820")));
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
         let mut router = router_config();
         router.ospf_interfaces = vec!["mesh-*".to_string()];
-        let state = desired_state(&awg, &router, &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router, &[]).unwrap();
 
         assert_eq!(state.wireguard_interfaces.len(), 1);
         assert_eq!(state.wireguard_interfaces[0].name, "mesh-2");
@@ -530,7 +528,7 @@ mod tests {
         assert_eq!(state.wireguard_peers.len(), 1);
         let p = &state.wireguard_peers[0];
         assert_eq!(p.public_key_b64, wg_key("east-pub"));
-        assert_eq!(p.name, "2");
+        assert_eq!(p.name, "east-pub");
         assert_eq!(p.endpoint_address, Some("east.example.com".to_string()));
         assert_eq!(p.endpoint_port, Some(51820));
         assert_eq!(p.persistent_keepalive, Some(25));
@@ -559,9 +557,8 @@ mod tests {
         i2.addresses = vec!["fe80::c612:ff/64".to_string()]; // same literal, different interface
         let awg = AwgConfig {
             interfaces: vec![i1, i2],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
         // Loopback bridge's own /128, the same link-local copied onto the loopback bridge (OSPFv3
         // needs one there to originate an Intra-Area-Prefix-LSA - see desired_state), plus one
@@ -595,9 +592,8 @@ mod tests {
         i.addresses = vec!["fe80::c612:ff/64".to_string()];
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
         assert_eq!(state.ip_v6_addresses.len(), 3);
         for a in &state.ip_v6_addresses {
@@ -614,9 +610,8 @@ mod tests {
     fn interface_with_no_addresses_gets_no_extra_ipv6_row() {
         let awg = AwgConfig {
             interfaces: vec![iface("mesh-2", 51820)],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
         assert_eq!(state.ip_v6_addresses.len(), 1); // loopback bridge only
     }
 
@@ -632,9 +627,8 @@ mod tests {
         ];
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
         // Loopback bridge's own /32 plus the mesh interface's tunnel v4 address.
         assert_eq!(state.ip_addresses.len(), 2);
@@ -662,12 +656,8 @@ mod tests {
         });
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        Ok(
-            desired_state(&awg, &router_config(), &[], "mesh-")?.wireguard_peers[0]
-                .persistent_keepalive,
-        )
+        Ok(desired_state(&awg, &router_config(), &[])?.wireguard_peers[0].persistent_keepalive)
     }
 
     const DIALED: Option<&str> = Some("192.0.2.2:51820");
@@ -689,25 +679,13 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_only_waited_for_is_sent_no_keepalive_whatever_its_entry_sets() {
+        assert_eq!(keepalive_desired(None, Some(10.into())).unwrap(), None);
+    }
+
+    #[test]
     fn a_dialed_peer_without_a_keepalive_of_its_own_takes_25() {
         assert_eq!(keepalive_desired(DIALED, None).unwrap(), Some(25));
-    }
-
-    #[test]
-    fn a_keepalive_written_as_a_range_is_refused_naming_the_interface_and_the_peer() {
-        let err = keepalive_of_a_dialed_peer(Range::new(20, 30).unwrap())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("mesh-2") && err.contains(&wg_key("east-pub")) && err.contains("20-30"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_peer_only_waited_for_may_set_a_range_it_is_never_sent() {
-        let waited_for = keepalive_desired(None, Some(Range::new(20, 30).unwrap()));
-        assert_eq!(waited_for.unwrap(), None);
     }
 
     #[test]
@@ -716,9 +694,8 @@ mod tests {
         i.peers.push(peer("west-pub", None));
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
 
         assert_eq!(state.wireguard_peers.len(), 1);
         assert_eq!(state.wireguard_peers[0].endpoint_address, None);
@@ -734,9 +711,8 @@ mod tests {
         i.peers.push(p);
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        let state = desired_state(&awg, &router_config(), &[], "mesh-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
         assert_eq!(state.wireguard_peers[0].allowed_address, "203.0.113.165/32");
     }
 
@@ -746,9 +722,8 @@ mod tests {
         i.peers.push(peer("east-pub", Some("no-port-here")));
         let awg = AwgConfig {
             interfaces: vec![i],
-            ..Default::default()
         };
-        assert!(desired_state(&awg, &router_config(), &[], "mesh-").is_err());
+        assert!(desired_state(&awg, &router_config(), &[]).is_err());
     }
 
     #[test]
@@ -759,13 +734,7 @@ mod tests {
             ("ether1".to_string(), "203.0.113.0/27".to_string()),
             ("wan0".to_string(), "192.0.2.0/24".to_string()),
         ];
-        let state = desired_state(
-            &AwgConfig::default(),
-            &router,
-            &physically_connected,
-            "mesh-",
-        )
-        .unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
                 .bgp_networks
@@ -785,13 +754,7 @@ mod tests {
         let mut router = router_config();
         router.learn = vec!["203.0.113.0/25".to_string()];
         let physically_connected = vec![("cni0".to_string(), "203.0.113.32/27".to_string())];
-        let state = desired_state(
-            &AwgConfig::default(),
-            &router,
-            &physically_connected,
-            "mesh-",
-        )
-        .unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
                 .bgp_networks
@@ -810,13 +773,7 @@ mod tests {
             ("cni2".to_string(), "203.0.113.96/27".to_string()),
             ("cni3".to_string(), "not a prefix".to_string()),
         ];
-        let state = desired_state(
-            &AwgConfig::default(),
-            &router,
-            &physically_connected,
-            "mesh-",
-        )
-        .unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         let announced_prefixes: Vec<&str> = state
             .bgp_networks
             .iter()
@@ -833,7 +790,7 @@ mod tests {
             net: "203.0.113.192/26".to_string(),
             label: None,
         });
-        let state = desired_state(&AwgConfig::default(), &router, &[], "mesh-").unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
         assert!(
             state
                 .bgp_networks
@@ -847,13 +804,7 @@ mod tests {
         let mut router = router_config();
         router.direct_interfaces = vec!["ether*".to_string()];
         let physically_connected = vec![("wan0".to_string(), "192.0.2.0/24".to_string())];
-        let state = desired_state(
-            &AwgConfig::default(),
-            &router,
-            &physically_connected,
-            "mesh-",
-        )
-        .unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         // Only own loopback is announced - the WAN prefix matches nothing.
         assert_eq!(state.bgp_networks.len(), 1);
         assert_eq!(state.bgp_networks[0].address, "198.51.100.1");
@@ -872,7 +823,7 @@ mod tests {
                 address: "3fff::3".to_string(),
             },
         ];
-        let state = desired_state(&AwgConfig::default(), &router, &[], "mesh-").unwrap();
+        let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
         assert_eq!(state.bgp_connections.len(), 2);
         let east = state
             .bgp_connections
@@ -892,26 +843,30 @@ mod tests {
             name: "bad".to_string(),
             address: "not-an-ip".to_string(),
         }];
-        assert!(desired_state(&AwgConfig::default(), &router, &[], "mesh-").is_err());
+        assert!(desired_state(&AwgConfig::default(), &router, &[]).is_err());
     }
 
     #[test]
-    fn a_peer_is_named_by_what_follows_the_prefix_of_its_interface() {
+    fn a_peer_is_named_as_its_entry_names_it() {
         let mut east = iface("wg-east", 51820);
-        east.peers = vec![peer("east", None)];
-        let mut west = iface("wg-wg-west", 51821);
-        west.peers = vec![peer("west", None)];
+        east.peers = vec![PeerEntry {
+            name: Some("east".to_owned()),
+            ..peer("east", None)
+        }];
+        let mut other = iface("wg-x", 51821);
+        other.peers = vec![PeerEntry {
+            name: Some("wg-west".to_owned()),
+            ..peer("west", None)
+        }];
         let awg = AwgConfig {
-            interfaces: vec![east, west],
-            ..AwgConfig::default()
+            interfaces: vec![east, other],
         };
-        let state = desired_state(&awg, &router_config(), &[], "wg-").unwrap();
+        let state = desired_state(&awg, &router_config(), &[]).unwrap();
         let names: Vec<&str> = state
             .wireguard_peers
             .iter()
             .map(|peer| peer.name.as_str())
             .collect();
-        // The prefix is taken off once: a node may be named like it.
         assert_eq!(names, ["east", "wg-west"]);
     }
 }

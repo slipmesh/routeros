@@ -257,7 +257,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -597,7 +597,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -748,8 +748,8 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sliplib-config"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "indexmap",
  "serde",
@@ -762,8 +762,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-mesh"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "sliplib-config",
  "sliplib-net",
@@ -773,24 +773,24 @@ dependencies = [
 
 [[package]]
 name = "sliplib-net"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -801,8 +801,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-yaml"
-version = "0.22.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.22.0#880442b88a4c72674da3750126cc9ee790f15fa4"
+version = "0.23.0"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
 dependencies = [
  "serde",
  "thiserror",
@@ -869,7 +869,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

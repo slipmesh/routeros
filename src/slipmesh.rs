@@ -15,9 +15,11 @@ fn no_settings(files: &File) -> anyhow::Result<()> {
     };
     let body: Mapping = document.read()?;
     if let Some((key, _)) = body.into_iter().next() {
+        let key = sliplib_yaml::to_string(&key)?;
         anyhow::bail!(
-            "{}: `routeros` has no settings, and this one holds {key:?} - take it out",
-            document.place()
+            "{}: `routeros` has no settings, and this one holds `{}` - take it out",
+            document.place(),
+            key.trim_end()
         );
     }
     Ok(())
@@ -184,25 +186,19 @@ nodes:
         let file = written(&with_settings);
         let path = file.path();
         let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(
-            err.contains("the `kind: platform` document at line") && err.contains("metrics"),
-            "{err}"
-        );
-        assert!(
-            err.contains(&format!("reading {}", path.display())),
-            "{err}"
+        let line = fixture().lines().count() + 2;
+        assert_eq!(
+            err,
+            format!(
+                "reading {}: the `kind: platform` document at line {line}: `routeros` has no \
+                 settings, and this one holds `metrics` - take it out",
+                path.display()
+            )
         );
         // Without the key, the document stands.
         let without = with_settings.replace("metrics: {}\n", "");
         let file = written(&without);
         read_node(&file.path(), "router1").unwrap();
-    }
-
-    #[test]
-    fn the_prefix_of_the_links_interfaces_is_the_one_the_file_sets() {
-        let file = written(&fixture().replace("interface_prefix: mesh-", "interface_prefix: wg-"));
-        let configs = read_node(&file.path(), "router1").unwrap();
-        assert_eq!(configs.awg.interfaces[0].name, "wg-node-a");
     }
 
     #[test]

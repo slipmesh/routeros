@@ -617,15 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn a_dialed_peer_takes_the_keepalive_its_entry_sets() {
-        assert_eq!(keepalive_of_a_dialed_peer(10.into()).unwrap(), Some(10));
-    }
-
-    // RouterOS reads back a keepalive of 0 as it reads back none: desired as either, it would be
-    // set again at every run.
-    #[test]
-    fn a_dialed_peer_whose_entry_sends_no_keepalive_desires_none() {
-        assert_eq!(keepalive_of_a_dialed_peer(0.into()).unwrap(), None);
+    fn a_dialed_peer_takes_the_keepalive_its_entry_sets_and_none_for_zero() {
+        for (entry, desired) in [(10, Some(10)), (0, None)] {
+            assert_eq!(keepalive_of_a_dialed_peer(entry.into()).unwrap(), desired);
+        }
     }
 
     #[test]

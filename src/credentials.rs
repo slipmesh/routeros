@@ -95,39 +95,30 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_empty_host_is_an_error_naming_it() {
-        assert!(error(&[(USERNAME, "automation")]).contains(HOST));
-        assert!(error(&[(HOST, ""), (USERNAME, "automation")]).contains(HOST));
-    }
-
-    #[test]
-    fn a_missing_or_empty_username_is_an_error_naming_it() {
-        assert!(error(&[(HOST, "203.0.113.1")]).contains(USERNAME));
-        assert!(error(&[(HOST, "203.0.113.1"), (USERNAME, "")]).contains(USERNAME));
-    }
-
-    #[test]
-    fn an_unset_port_defaults_to_the_api_ssl_port() {
-        let creds = from_lookup(lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")]));
-        assert_eq!(creds.unwrap().port, DEFAULT_PORT);
-    }
-
-    #[test]
-    fn a_port_that_is_not_a_port_number_is_an_error_naming_it() {
-        for port in ["", "x", "65536", "-1"] {
-            let err = error(&[
-                (HOST, "203.0.113.1"),
-                (USERNAME, "automation"),
-                (PORT, port),
-            ]);
-            assert!(err.contains(PORT), "{port:?}: {err}");
+    fn a_missing_empty_or_malformed_variable_is_an_error_naming_it() {
+        let host = (HOST, "203.0.113.1");
+        let username = (USERNAME, "automation");
+        let cases: &[(&[(&str, &str)], &str)] = &[
+            (&[username], HOST),
+            (&[(HOST, ""), username], HOST),
+            (&[host], USERNAME),
+            (&[host, (USERNAME, "")], USERNAME),
+            (&[host, username, (PORT, "")], PORT),
+            (&[host, username, (PORT, "x")], PORT),
+            (&[host, username, (PORT, "65536")], PORT),
+            (&[host, username, (PORT, "-1")], PORT),
+        ];
+        for (vars, named) in cases {
+            let err = error(vars);
+            assert!(err.contains(named), "{vars:?}: {err}");
         }
     }
 
     #[test]
-    fn an_unset_password_is_none() {
-        let creds = from_lookup(lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")]));
-        assert_eq!(creds.unwrap().password, None);
+    fn an_unset_port_is_the_api_ssl_port_and_an_unset_password_none() {
+        let creds =
+            from_lookup(lookup(&[(HOST, "203.0.113.1"), (USERNAME, "automation")])).unwrap();
+        assert_eq!((creds.port, creds.password), (DEFAULT_PORT, None));
     }
 
     #[test]

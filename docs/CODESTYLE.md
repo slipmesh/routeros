@@ -61,8 +61,8 @@
 ## Tests
 
 - Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most; in
-  `diff.rs` one named module per keyed table and three shared ones (`plan_tests`, `singleton_tests`,
-  `passive_flag_tests`); `validate_endpoint_tests` in `sanitize.rs`.
+  `diff.rs` one named module per keyed table and two shared ones (`plan_tests`,
+  `singleton_tests`); `validate_endpoint_tests` in `sanitize.rs`.
   `tests/cli.rs` runs the binary as a caller does.
 - A test pins behaviour of this repository's code, not another crate's or anything that holds by
   construction. A unit test pins what an error names, not its wording; `tests/cli.rs` pins the log

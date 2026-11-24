@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn parses_wireguard_interface_row() {
-        let r = row(&[
+        let mut r = row(&[
             (".id", "*1"),
             ("name", "mesh-east"),
             ("listen-port", "51820"),
@@ -1223,16 +1223,8 @@ mod tests {
         assert_eq!(iface.listen_port, 51820);
         assert!(!iface.disabled);
         assert_eq!(iface.mtu, None);
-    }
 
-    #[test]
-    fn a_wireguard_interface_reads_its_mtu() {
-        let r = row(&[
-            (".id", "*1"),
-            ("name", "mesh-east"),
-            ("listen-port", "51820"),
-            ("mtu", "1420"),
-        ]);
+        r.insert("mtu".to_string(), Some("1420".to_string()));
         assert_eq!(parse_wireguard_interface(&r).unwrap().mtu, Some(1420));
     }
 
@@ -1250,27 +1242,15 @@ mod tests {
     }
 
     #[test]
-    fn ospf_template_passive_raw_is_none_when_flag_absent() {
-        let r = row(&[
-            (".id", "*1"),
-            ("interfaces", "mesh-east"),
-            ("area", "backbone"),
-        ]);
-        let t = parse_ospf_template(&r).unwrap();
-        assert_eq!(t.passive_raw, None);
-    }
-
-    #[test]
-    fn ospf_template_passive_raw_is_some_when_key_present_with_no_value() {
-        // The exact wire shape confirmed against a real device: a passive row has the `passive`
-        // key present with an empty/`None` inner value (`=passive=`), not a `"true"` string - a
-        // plain `row.get("passive")` can't tell that apart from the key being absent entirely,
-        // which is exactly the bug this regression test catches.
+    fn an_ospf_template_is_passive_only_where_the_key_is_there() {
         let mut r = row(&[
             (".id", "*1"),
             ("interfaces", "router-lo"),
             ("area", "backbone"),
         ]);
+        assert_eq!(parse_ospf_template(&r).unwrap().passive_raw, None);
+
+        // A real device sends a passive row as `=passive=`: the key with no value.
         r.insert("passive".to_string(), None);
         let t = parse_ospf_template(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
@@ -1286,16 +1266,10 @@ mod tests {
         }
     }
 
-    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the
-    /// value, and the whole run aborts on it - an unset flag must not reach the device at all.
     #[test]
-    fn ipv6_address_settings_leave_out_an_unset_auto_link_local() {
+    fn ipv6_address_settings_send_auto_link_local_only_when_set() {
         let settings = ipv6_address_settings(&ipv6_address("3fff::1/128", None));
         assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
-    }
-
-    #[test]
-    fn ipv6_address_settings_send_auto_link_local_when_set() {
         let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
         assert!(settings.contains(&("auto-link-local", "no")));
     }
@@ -1392,27 +1366,18 @@ mod tests {
     }
 
     #[test]
-    fn a_cleared_endpoint_port_reads_back_as_none() {
-        let r = row(&[
-            (".id", "*1"),
-            ("interface", "mesh-a"),
+    fn a_peer_value_written_as_zero_reads_back_as_none() {
+        for (key, written) in [
             ("endpoint-port", "0"),
-        ]);
-        assert_eq!(parse_wireguard_peer(&r).unwrap().endpoint_port, None);
-    }
-
-    #[test]
-    fn a_keepalive_of_zero_reads_back_as_none() {
-        for written in ["0", "0s"] {
-            let r = row(&[
-                (".id", "*1"),
-                ("interface", "mesh-a"),
-                ("persistent-keepalive", written),
-            ]);
+            ("persistent-keepalive", "0"),
+            ("persistent-keepalive", "0s"),
+        ] {
+            let r = row(&[(".id", "*1"), ("interface", "mesh-a"), (key, written)]);
+            let peer = parse_wireguard_peer(&r).unwrap();
             assert_eq!(
-                parse_wireguard_peer(&r).unwrap().persistent_keepalive,
-                None,
-                "{written}"
+                (peer.endpoint_port, peer.persistent_keepalive),
+                (None, None),
+                "{key}={written}"
             );
         }
     }

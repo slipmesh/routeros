@@ -77,24 +77,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colorizes_add_update_remove_by_leading_marker() {
-        assert_eq!(
-            colorize_diff_line("+ interface wireguard: foo"),
-            format!("{ANSI_GREEN}+ interface wireguard: foo{ANSI_RESET}")
-        );
-        assert_eq!(
-            colorize_diff_line("~ routing ospf area (*1): foo"),
-            format!("{ANSI_YELLOW}~ routing ospf area (*1): foo{ANSI_RESET}")
-        );
-        assert_eq!(
-            colorize_diff_line("- interface wireguard: foo"),
-            format!("{ANSI_RED}- interface wireguard: foo{ANSI_RESET}")
-        );
-    }
-
-    #[test]
-    fn passes_through_unrecognized_lines_unstyled() {
-        assert_eq!(colorize_diff_line("not a diff line"), "not a diff line");
-        assert_eq!(colorize_diff_line(""), "");
+    fn colorizes_add_update_remove_by_leading_marker_and_nothing_else() {
+        for (line, colour) in [
+            ("+ interface wireguard: foo", Some(ANSI_GREEN)),
+            ("~ routing ospf area (*1): foo", Some(ANSI_YELLOW)),
+            ("- interface wireguard: foo", Some(ANSI_RED)),
+            ("not a diff line", None),
+            ("", None),
+        ] {
+            let styled =
+                colour.map_or_else(|| line.to_string(), |c| format!("{c}{line}{ANSI_RESET}"));
+            assert_eq!(colorize_diff_line(line), styled);
+        }
     }
 }

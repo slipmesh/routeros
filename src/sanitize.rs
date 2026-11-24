@@ -32,6 +32,8 @@ mod validate_endpoint_tests {
             ("", false),
             ("router1.example.com;evil", false),
             ("router1.example.com evil", false),
+            ("router1.example.com\"", false),
+            ("router1.example.com\0", false),
         ] {
             assert_eq!(
                 validate_endpoint(endpoint).is_ok(),

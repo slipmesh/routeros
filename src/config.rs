@@ -330,7 +330,6 @@ pub fn desired_state(
 mod tests {
     use super::*;
     use crate::test_support::wg_key;
-    use sliplib_config::Range;
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -593,40 +592,29 @@ mod tests {
         assert_eq!(state.ip_v6_addresses.len(), 3);
     }
 
-    /// The keepalive desired for the one peer of an interface, at `endpoint` with its entry's
-    /// keepalive `set`.
-    fn keepalive_desired(
-        endpoint: Option<&str>,
-        set: Option<Range<u16>>,
-    ) -> anyhow::Result<Option<u16>> {
-        let mut i = iface("mesh-2", 51820);
-        i.peers.push(PeerEntry {
-            persistent_keepalive: set,
-            ..peer("east-pub", endpoint)
-        });
-        let awg = AwgConfig {
-            interfaces: vec![i],
-        };
-        Ok(desired_state(&awg, &router_config(), &[])?.wireguard_peers[0].persistent_keepalive)
-    }
-
-    const DIALED: Option<&str> = Some("192.0.2.2:51820");
-
-    fn keepalive_of_a_dialed_peer(set: Range<u16>) -> anyhow::Result<Option<u16>> {
-        keepalive_desired(DIALED, Some(set))
-    }
-
     #[test]
     fn a_dialed_peer_takes_the_keepalive_its_entry_sets_and_none_for_zero() {
         for (entry, desired) in [(10, Some(10)), (0, None)] {
-            assert_eq!(keepalive_of_a_dialed_peer(entry.into()).unwrap(), desired);
+            let mut i = iface("mesh-2", 51820);
+            i.peers.push(PeerEntry {
+                persistent_keepalive: Some(entry.into()),
+                ..peer("east-pub", Some("192.0.2.2:51820"))
+            });
+            let awg = AwgConfig {
+                interfaces: vec![i],
+            };
+            let state = desired_state(&awg, &router_config(), &[]).unwrap();
+            assert_eq!(state.wireguard_peers[0].persistent_keepalive, desired);
         }
     }
 
     #[test]
     fn nat_peer_with_no_endpoint_gets_no_endpoint_or_keepalive() {
         let mut i = iface("mesh-3", 51821);
-        i.peers.push(peer("west-pub", None));
+        i.peers.push(PeerEntry {
+            allowed_ips: sliplib_yaml::from_str(r#"["198.51.100.0/24", "2001:db8::/32"]"#).unwrap(),
+            ..peer("west-pub", None)
+        });
         let awg = AwgConfig {
             interfaces: vec![i],
         };
@@ -636,6 +624,10 @@ mod tests {
         assert_eq!(state.wireguard_peers[0].endpoint_address, None);
         assert_eq!(state.wireguard_peers[0].endpoint_port, None);
         assert_eq!(state.wireguard_peers[0].persistent_keepalive, None);
+        assert_eq!(
+            state.wireguard_peers[0].allowed_address,
+            "198.51.100.0/24,2001:db8::/32"
+        );
     }
 
     #[test]

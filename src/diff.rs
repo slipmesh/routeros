@@ -684,6 +684,7 @@ mod singleton_tests {
 mod wireguard_interfaces_tests {
     use super::*;
     use crate::test_support::wg_key;
+    use sliplib_secrets::wireguard::encode_key;
 
     fn desired(name: &str, port: u16) -> DesiredWireguardInterface {
         DesiredWireguardInterface {
@@ -719,12 +720,21 @@ mod wireguard_interfaces_tests {
     }
 
     #[test]
-    fn update_when_the_key_changes() {
+    fn a_key_is_updated_when_it_changes_and_left_as_the_device_clamps_it() {
         let mut d = desired("mesh-east", 51820);
         d.private_key_b64 = wg_key("new").into();
         let plan = wireguard_interfaces(&[current("*1", "mesh-east", 51820)], &[d.clone()]);
         assert_eq!(plan.update.len(), 1);
         assert_eq!(plan.update[0].1, d);
+
+        // Every bit set, as generated and as RouterOS stores it once clamped.
+        let mut clamped = [0xFF; 32];
+        clamped[0] = 0xF8;
+        clamped[31] = 0x7F;
+        d.private_key_b64 = encode_key(&[0xFF; 32]).into();
+        let mut c = current("*1", "mesh-east", 51820);
+        c.private_key_b64 = encode_key(&clamped).into();
+        assert!(wireguard_interfaces(&[c], &[d]).is_empty());
     }
 
     #[test]
@@ -962,6 +972,11 @@ mod ospf_interface_templates_tests {
         }];
         let des = vec![loopback_desired("router-lo")];
         assert!(ospf_interface_templates(&cur, &des).is_empty());
+
+        let mut not_passive = cur;
+        not_passive[0].passive_raw = None;
+        let plan = ospf_interface_templates(&not_passive, &des);
+        assert_eq!(plan.update, vec![("*1".to_string(), des[0].clone())]);
     }
 
     /// Losing this comparison leaves a device on `use-bfd=no` for good: the BFD entries would

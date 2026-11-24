@@ -36,7 +36,8 @@
 
 - Types and functions say what they are for, not how.
 - A new test is named for the behaviour it pins, as a sentence:
-  `an_unset_port_defaults_to_the_api_ssl_port`. Older tests with short names keep them.
+  `a_dialed_peer_takes_the_keepalive_its_entry_sets_and_none_for_zero`. Older tests with short
+  names keep them.
 - `///` on a field of `Cli` is its `--help` text, so it says what the flag does.
 
 ## Error handling

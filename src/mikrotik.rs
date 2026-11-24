@@ -1202,11 +1202,14 @@ mod tests {
 
     #[test]
     fn keepalive_seconds_strips_the_time_unit_suffix() {
-        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25s")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            Some(25)
-        );
+        for written in ["25s", "25"] {
+            let r = row(&[(".id", "*1"), ("persistent-keepalive", written)]);
+            assert_eq!(
+                get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
+                Some(25),
+                "{written}"
+            );
+        }
     }
 
     #[test]
@@ -1221,6 +1224,7 @@ mod tests {
         assert_eq!(iface.id, "*1");
         assert_eq!(iface.name, "mesh-east");
         assert_eq!(iface.listen_port, 51820);
+        assert_eq!(iface.private_key_b64.expose(), "abc=");
         assert!(!iface.disabled);
         assert_eq!(iface.mtu, None);
 
@@ -1454,6 +1458,9 @@ mod tests {
         assert!(our_ip_addresses(&unparsed, &[]).is_err());
         assert!(our_ipv6_addresses(&unparsed, &[]).is_err());
         assert!(our_list_members(&unparsed, &[]).is_err());
+        assert!(
+            parse_wireguard_interface(&row(&[(".id", "*1"), ("listen-port", "51820")])).is_err()
+        );
     }
 
     #[test]

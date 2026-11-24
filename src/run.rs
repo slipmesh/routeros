@@ -22,10 +22,9 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .await
         .context("failed to connect to the RouterOS device")?;
 
-    let physically_connected =
-        crate::mikrotik::read_physically_connected_prefixes(&device, config::LOOPBACK_BRIDGE)
-            .await
-            .context("failed to read physically-connected prefixes from the device")?;
+    let physically_connected = crate::mikrotik::read_physically_connected_prefixes(&device)
+        .await
+        .context("failed to read physically-connected prefixes from the device")?;
 
     let desired = config::desired_state(&configs.awg, &configs.router, &physically_connected)?;
 

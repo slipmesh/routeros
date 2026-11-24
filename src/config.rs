@@ -10,11 +10,10 @@ use crate::diff::{
 };
 use crate::sanitize::validate_endpoint;
 use sliplib_config::awg::{AwgConfig, InterfaceEntry, PeerEntry};
-use sliplib_config::router::RouterConfig;
+use sliplib_config::router::{ROUTER_LOOPBACK, RouterConfig};
+use sliplib_net::{IpNet, Ipv4Net, Ipv6Net};
 use std::collections::BTreeSet;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-pub const LOOPBACK_BRIDGE: &str = "router-lo";
 pub const LAN_LIST: &str = "LAN";
 /// Version-neutral name (was `"default-v2"` under OSPFv2) - the `version` field alone now
 /// distinguishes the instance; see `mikrotik.rs::apply_ospf_instance`'s doc comment on the
@@ -55,51 +54,19 @@ pub struct DesiredState {
     pub bgp_connections: Vec<DesiredBgpConnection>,
 }
 
-/// `router.node.loopback_addresses` is exactly one IPv4 + one IPv6 CIDR (the router config is
-/// validated before it reaches here) - pulls both out by family. Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
+/// Never advertised: none of these is a LAN prefix to hand out via SLAAC RA.
 ///
 /// `auto-link-local=no` on a manual link-local makes it replace the address RouterOS generates for
 /// the interface; left at the default `yes`, the generated one comes back next to it on every boot
 /// and OSPFv3 may bind to that instead, advertising a next hop the other end of the link does not
 /// consider on-link. RouterOS refuses the flag on any other address, so there it stays unset.
-fn own_ipv6_address(address: &str, interface: &str) -> anyhow::Result<DesiredIpv6Address> {
-    let host = address.split_once('/').map_or(address, |(host, _)| host);
-    let host: Ipv6Addr = host
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid IPv6 address {address:?} on {interface}: {e}"))?;
-    Ok(DesiredIpv6Address {
+fn own_ipv6_address(address: Ipv6Net, interface: &str) -> DesiredIpv6Address {
+    DesiredIpv6Address {
         address: address.to_string(),
         interface: interface.to_string(),
         advertise: false,
-        auto_link_local: host.is_unicast_link_local().then_some(false),
+        auto_link_local: address.addr().is_unicast_link_local().then_some(false),
         disabled: false,
-    })
-}
-
-fn own_loopbacks(router: &RouterConfig) -> anyhow::Result<(Ipv4Addr, Ipv6Addr)> {
-    let mut v4 = None;
-    let mut v6 = None;
-    for addr in &router.node.loopback_addresses {
-        let (ip, _prefix) = sliplib_config::router::parse_loopback_address(addr)
-            .map_err(|e| anyhow::anyhow!("invalid loopback_addresses entry {addr:?}: {e}"))?;
-        match ip {
-            IpAddr::V4(a) => v4 = Some(a),
-            IpAddr::V6(a) => v6 = Some(a),
-        }
-    }
-    Ok((
-        v4.ok_or_else(|| anyhow::anyhow!("node.loopback_addresses has no IPv4 entry"))?,
-        v6.ok_or_else(|| anyhow::anyhow!("node.loopback_addresses has no IPv6 entry"))?,
-    ))
-}
-
-/// Only the suffix-`*` grammar the node's configs use (the links' prefix and `*`), enough for
-/// `ospf_interfaces` and `direct_interfaces`: RouterOS has no pattern engine to hand them to, so
-/// this tool matches locally.
-fn glob_match(pattern: &str, name: &str) -> bool {
-    match pattern.strip_suffix('*') {
-        Some(prefix) => name.starts_with(prefix),
-        None => pattern == name,
     }
 }
 
@@ -117,9 +84,10 @@ fn parse_endpoint(endpoint: &str) -> anyhow::Result<(String, u16)> {
 pub fn desired_state(
     awg: &AwgConfig,
     router: &RouterConfig,
-    physically_connected: &[(String, String)],
+    physically_connected: &[(String, Ipv4Net)],
 ) -> anyhow::Result<DesiredState> {
-    let (own_loopback, own_ipv6_loopback) = own_loopbacks(router)?;
+    let loopbacks = router.node.loopback_addresses;
+    let (own_loopback, own_ipv6_loopback) = (loopbacks.ipv4.0.addr(), loopbacks.ipv6.0.addr());
 
     let mut wireguard_interfaces = Vec::new();
     let mut wireguard_peers = Vec::new();
@@ -145,15 +113,14 @@ pub fn desired_state(
         // address, and duplicate address detection marks every one past the first `invalid`. With
         // `addressing.tunnel.ipv4` an IPv4 address comes with the link-local, without which
         // masquerade has no source address on a mesh interface.
-        for addr in &iface.addresses {
-            if addr.contains(':') {
-                mesh_link_locals.push(own_ipv6_address(addr, &iface.name)?);
-            } else {
-                mesh_ipv4_addresses.push(DesiredIpAddress {
-                    address: addr.clone(),
+        for address in &iface.addresses {
+            match address.0 {
+                IpNet::V6(address) => mesh_link_locals.push(own_ipv6_address(address, &iface.name)),
+                IpNet::V4(address) => mesh_ipv4_addresses.push(DesiredIpAddress {
+                    address: address.to_string(),
                     interface: iface.name.clone(),
                     disabled: false,
-                });
+                }),
             }
         }
 
@@ -174,10 +141,11 @@ pub fn desired_state(
                 name: peer.name.clone().unwrap_or_default(),
                 public_key_b64: peer.public_key.clone(),
                 allowed_address: peer
-                    .allowed_ips
-                    .as_ref()
-                    .map(|ips| ips.join(","))
-                    .unwrap_or_else(|| "0.0.0.0/0,::/0".to_string()),
+                    .allowed_ips_or_all()
+                    .iter()
+                    .map(|prefix| prefix.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
                 endpoint_address,
                 endpoint_port,
                 persistent_keepalive,
@@ -188,16 +156,13 @@ pub fn desired_state(
 
     let mut ip_addresses = vec![DesiredIpAddress {
         address: format!("{own_loopback}/32"),
-        interface: LOOPBACK_BRIDGE.to_string(),
+        interface: ROUTER_LOOPBACK.to_string(),
         disabled: false,
     }];
     ip_addresses.extend(mesh_ipv4_addresses);
     // Mesh interfaces' own link-locals (`mesh_link_locals`, built above from `iface.addresses`)
     // join the loopback's addresses in the same table.
-    let mut ip_v6_addresses = vec![own_ipv6_address(
-        &format!("{own_ipv6_loopback}/128"),
-        LOOPBACK_BRIDGE,
-    )?];
+    let mut ip_v6_addresses = vec![own_ipv6_address(own_ipv6_loopback.into(), ROUTER_LOOPBACK)];
     // OSPFv3 runs entirely over link-local addresses, and RouterOS will not originate an
     // Intra-Area-Prefix-LSA for an interface that has none - it falls back to advertising the
     // loopback only through `redistribute=connected`, i.e. as an AS-external LSA. BIRD's kernel
@@ -210,14 +175,17 @@ pub fn desired_state(
     // Same address the mesh interfaces carry (one link-local per node by construction, see the
     // loop above), so it is taken from there rather than recomputed - if that convention ever
     // changes, both follow it together.
-    if let Some(link_local) = mesh_link_locals.first().map(|a| a.address.clone()) {
-        ip_v6_addresses.push(own_ipv6_address(&link_local, LOOPBACK_BRIDGE)?);
+    if let Some(link_local) = mesh_link_locals.first() {
+        ip_v6_addresses.push(DesiredIpv6Address {
+            interface: ROUTER_LOOPBACK.to_string(),
+            ..link_local.clone()
+        });
     }
     ip_v6_addresses.extend(mesh_link_locals);
 
     // The loopback is passive - it has no neighbour, so nothing to check the liveness of.
     let mut ospf_interface_templates = vec![DesiredOspfInterfaceTemplate {
-        interfaces: LOOPBACK_BRIDGE.to_string(),
+        interfaces: ROUTER_LOOPBACK.to_string(),
         area: OSPF_AREA.to_string(),
         type_: None,
         cost: None,
@@ -230,11 +198,11 @@ pub fn desired_state(
     let mesh_names: Vec<&str> = awg.interfaces.iter().map(|i| i.name.as_str()).collect();
     let mut matched_mesh: Vec<&str> = Vec::new();
     for pattern in &router.ospf_interfaces {
-        if pattern == LOOPBACK_BRIDGE {
+        if pattern.is_router_loopback() {
             continue; // already covered by the unconditional passive loopback template above
         }
         for name in &mesh_names {
-            if glob_match(pattern, name) && !matched_mesh.contains(name) {
+            if pattern.matches(name) && !matched_mesh.contains(name) {
                 matched_mesh.push(name);
             }
         }
@@ -279,19 +247,14 @@ pub fn desired_state(
         let direct = router
             .direct_interfaces
             .iter()
-            .any(|pattern| glob_match(pattern, iface));
-        let learned = router.learn.iter().any(|range| {
-            learn_range_contains(range, prefix).unwrap_or_else(|e| {
-                tracing::warn!(range = %range, prefix = %prefix, error = %e, "skipping unparsable learn range/prefix");
-                false
-            })
-        });
+            .any(|pattern| pattern.matches(iface));
+        let learned = router.learn.iter().any(|range| range.0.contains(prefix));
         if direct || learned {
-            bgp_network_addrs.insert(prefix.clone());
+            bgp_network_addrs.insert(prefix.to_string());
         }
     }
     for entry in &router.announce {
-        bgp_network_addrs.insert(entry.net.clone());
+        bgp_network_addrs.insert(entry.net.0.to_string());
     }
     bgp_network_addrs.insert(format!("{own_loopback}/32"));
     // RouterOS's `ip firewall address-list` echoes a host-only entry back without its `/32`
@@ -312,13 +275,7 @@ pub fn desired_state(
 
     let mut bgp_connections = Vec::new();
     for peer in &router.bgp_peers {
-        let remote_address: Ipv6Addr = peer.address.parse().map_err(|e| {
-            anyhow::anyhow!(
-                "bgp peer {:?}: invalid address {:?}: {e}",
-                peer.name,
-                peer.address
-            )
-        })?;
+        let remote_address = peer.address;
         bgp_connections.push(DesiredBgpConnection {
             name: format!("bgp-{}", peer.name),
             instance: BGP_INSTANCE.to_string(),
@@ -339,7 +296,7 @@ pub fn desired_state(
         wireguard_peers,
         list_members,
         loopback_bridge: DesiredBridge {
-            name: LOOPBACK_BRIDGE.to_string(),
+            name: ROUTER_LOOPBACK.to_string(),
             disabled: false,
         },
         ospf_instance: DesiredOspfInstance {
@@ -369,10 +326,6 @@ pub fn desired_state(
     })
 }
 
-fn learn_range_contains(range: &str, prefix: &str) -> anyhow::Result<bool> {
-    Ok(sliplib_net::parse_ipv4(range)?.contains(&sliplib_net::parse_ipv4(prefix)?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,11 +333,19 @@ mod tests {
     use sliplib_config::Range;
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    fn connected(list: &[(&str, &str)]) -> Vec<(String, Ipv4Net)> {
+        list.iter()
+            .map(|(iface, prefix)| ((*iface).to_owned(), prefix.parse().unwrap()))
+            .collect()
+    }
 
     fn router_config() -> RouterConfig {
         RouterConfig {
             node: NodeIdentity {
-                loopback_addresses: vec!["198.51.100.1/32".to_string(), "3fff::1/128".to_string()],
+                loopback_addresses: sliplib_yaml::from_str(r#"["198.51.100.1/32", "3fff::1/128"]"#)
+                    .unwrap(),
             },
             bgp_as: 65062,
             bgp_peers: vec![],
@@ -428,7 +389,7 @@ mod tests {
             interfaces: vec![iface("mesh-2", 51820)],
         };
         let mut router = router_config();
-        router.ospf_interfaces = vec!["mesh-*".to_string()];
+        router.ospf_interfaces = sliplib_yaml::from_str(r#"["mesh-*"]"#).unwrap();
 
         router.bfd = Some(sliplib_config::router::BfdSettings {
             min_rx_ms: 500,
@@ -443,7 +404,7 @@ mod tests {
         for t in &on.ospf_interface_templates {
             assert_eq!(
                 t.use_bfd,
-                t.interfaces != LOOPBACK_BRIDGE,
+                t.interfaces != ROUTER_LOOPBACK,
                 "{}",
                 t.interfaces
             );
@@ -461,14 +422,14 @@ mod tests {
             interfaces: vec![iface("mesh-2", 51820), iface("wg-3", 51821)],
         };
         let mut router = router_config();
-        router.ospf_interfaces = vec!["mesh-*".to_string(), "mesh-2".to_string()];
+        router.ospf_interfaces = sliplib_yaml::from_str(r#"["mesh-*", "mesh-2"]"#).unwrap();
         let state = desired_state(&awg, &router, &[]).unwrap();
         let templates: Vec<&str> = state
             .ospf_interface_templates
             .iter()
             .map(|t| t.interfaces.as_str())
             .collect();
-        assert_eq!(templates, [LOOPBACK_BRIDGE, "mesh-2"]);
+        assert_eq!(templates, [ROUTER_LOOPBACK, "mesh-2"]);
     }
 
     #[test]
@@ -476,11 +437,11 @@ mod tests {
         let state = desired_state(&AwgConfig::default(), &router_config(), &[]).unwrap();
         assert_eq!(state.ip_addresses.len(), 1);
         assert_eq!(state.ip_addresses[0].address, "198.51.100.1/32");
-        assert_eq!(state.ip_addresses[0].interface, LOOPBACK_BRIDGE);
+        assert_eq!(state.ip_addresses[0].interface, ROUTER_LOOPBACK);
         assert_eq!(state.ip_v6_addresses.len(), 1);
         assert_eq!(state.ip_v6_addresses[0].address, "3fff::1/128");
         assert!(!state.ip_v6_addresses[0].advertise);
-        assert_eq!(state.loopback_bridge.name, LOOPBACK_BRIDGE);
+        assert_eq!(state.loopback_bridge.name, ROUTER_LOOPBACK);
         assert_eq!(state.ospf_instance.version, 3);
         assert_eq!(
             state.ospf_instance.router_id,
@@ -514,7 +475,7 @@ mod tests {
             interfaces: vec![i],
         };
         let mut router = router_config();
-        router.ospf_interfaces = vec!["mesh-*".to_string()];
+        router.ospf_interfaces = sliplib_yaml::from_str(r#"["mesh-*"]"#).unwrap();
         let state = desired_state(&awg, &router, &[]).unwrap();
 
         assert_eq!(state.wireguard_interfaces.len(), 1);
@@ -550,11 +511,11 @@ mod tests {
     }
 
     #[test]
-    fn mesh_interface_addresses_are_applied_verbatim_from_the_awg_config() {
+    fn mesh_interface_addresses_are_applied_as_the_awg_config_gives_them() {
         let mut i1 = iface("mesh-2", 51820);
-        i1.addresses = vec!["fe80::c612:ff/64".to_string()];
+        i1.addresses = sliplib_yaml::from_str(r#"["fe80::c612:ff/64"]"#).unwrap();
         let mut i2 = iface("mesh-3", 51821);
-        i2.addresses = vec!["fe80::c612:ff/64".to_string()]; // same literal, different interface
+        i2.addresses = sliplib_yaml::from_str(r#"["fe80::c612:ff/64"]"#).unwrap(); // same literal, different interface
         let awg = AwgConfig {
             interfaces: vec![i1, i2],
         };
@@ -568,7 +529,7 @@ mod tests {
             state
                 .ip_v6_addresses
                 .iter()
-                .any(|a| a.interface == LOOPBACK_BRIDGE && a.address == "fe80::c612:ff/64")
+                .any(|a| a.interface == ROUTER_LOOPBACK && a.address == "fe80::c612:ff/64")
         );
         assert!(
             state.ip_v6_addresses.iter().any(|a| a.interface == "mesh-2"
@@ -589,7 +550,7 @@ mod tests {
     #[test]
     fn link_locals_replace_the_generated_one_and_the_ula_leaves_the_flag_unset() {
         let mut i = iface("mesh-2", 51820);
-        i.addresses = vec!["fe80::c612:ff/64".to_string()];
+        i.addresses = sliplib_yaml::from_str(r#"["fe80::c612:ff/64"]"#).unwrap();
         let awg = AwgConfig {
             interfaces: vec![i],
         };
@@ -621,10 +582,8 @@ mod tests {
         // link-local(s) - the fix for NAT/MASQUERADE
         // otherwise having no valid source address when service_subnet traffic egresses via one.
         let mut i = iface("mesh-2", 51820);
-        i.addresses = vec![
-            "fe80::c612:ff/64".to_string(),
-            "198.51.100.255/32".to_string(),
-        ];
+        i.addresses =
+            sliplib_yaml::from_str(r#"["fe80::c612:ff/64", "198.51.100.255/32"]"#).unwrap();
         let awg = AwgConfig {
             interfaces: vec![i],
         };
@@ -704,10 +663,10 @@ mod tests {
     }
 
     #[test]
-    fn explicit_allowed_ips_are_joined_verbatim() {
+    fn explicit_allowed_ips_are_joined_in_order() {
         let mut i = iface("mesh-9", 51900);
         let mut p = peer("rw-pub", None);
-        p.allowed_ips = Some(vec!["203.0.113.165/32".to_string()]);
+        p.allowed_ips = Some(sliplib_yaml::from_str(r#"["203.0.113.165/32"]"#).unwrap());
         i.peers.push(p);
         let awg = AwgConfig {
             interfaces: vec![i],
@@ -729,11 +688,9 @@ mod tests {
     #[test]
     fn direct_interfaces_glob_selects_which_physically_connected_prefixes_are_announced() {
         let mut router = router_config();
-        router.direct_interfaces = vec!["ether*".to_string()];
-        let physically_connected = vec![
-            ("ether1".to_string(), "203.0.113.0/27".to_string()),
-            ("wan0".to_string(), "192.0.2.0/24".to_string()),
-        ];
+        router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
+        let physically_connected =
+            connected(&[("ether1", "203.0.113.0/27"), ("wan0", "192.0.2.0/24")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
@@ -752,8 +709,8 @@ mod tests {
     #[test]
     fn learn_range_selects_a_physically_connected_prefix_not_matched_by_direct_interfaces() {
         let mut router = router_config();
-        router.learn = vec!["203.0.113.0/25".to_string()];
-        let physically_connected = vec![("cni0".to_string(), "203.0.113.32/27".to_string())];
+        router.learn = sliplib_yaml::from_str(r#"["203.0.113.0/25"]"#).unwrap();
+        let physically_connected = connected(&[("cni0", "203.0.113.32/27")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         assert!(
             state
@@ -766,13 +723,12 @@ mod tests {
     #[test]
     fn a_learn_range_selects_only_prefixes_inside_it() {
         let mut router = router_config();
-        router.learn = vec!["203.0.113.5/26".to_string(), "203.0.113.96/28".to_string()];
-        let physically_connected = vec![
-            ("cni0".to_string(), "203.0.113.32/27".to_string()),
-            ("cni1".to_string(), "203.0.113.64/27".to_string()),
-            ("cni2".to_string(), "203.0.113.96/27".to_string()),
-            ("cni3".to_string(), "not a prefix".to_string()),
-        ];
+        router.learn = sliplib_yaml::from_str(r#"["203.0.113.5/26", "203.0.113.96/28"]"#).unwrap();
+        let physically_connected = connected(&[
+            ("cni0", "203.0.113.32/27"),
+            ("cni1", "203.0.113.64/27"),
+            ("cni2", "203.0.113.96/27"),
+        ]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         let announced_prefixes: Vec<&str> = state
             .bgp_networks
@@ -787,7 +743,7 @@ mod tests {
     fn announce_entries_are_always_included_regardless_of_live_state() {
         let mut router = router_config();
         router.announce.push(sliplib_config::router::AnnounceEntry {
-            net: "203.0.113.192/26".to_string(),
+            net: sliplib_yaml::from_str(r#""203.0.113.192/26""#).unwrap(),
             label: None,
         });
         let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
@@ -802,8 +758,8 @@ mod tests {
     #[test]
     fn unmatched_physically_connected_prefixes_are_not_announced() {
         let mut router = router_config();
-        router.direct_interfaces = vec!["ether*".to_string()];
-        let physically_connected = vec![("wan0".to_string(), "192.0.2.0/24".to_string())];
+        router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
+        let physically_connected = connected(&[("wan0", "192.0.2.0/24")]);
         let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
         // Only own loopback is announced - the WAN prefix matches nothing.
         assert_eq!(state.bgp_networks.len(), 1);
@@ -816,11 +772,11 @@ mod tests {
         router.bgp_peers = vec![
             BgpPeerEntry {
                 name: "node-h".to_string(),
-                address: "3fff::2".to_string(),
+                address: "3fff::2".parse().unwrap(),
             },
             BgpPeerEntry {
                 name: "node-d".to_string(),
-                address: "3fff::3".to_string(),
+                address: "3fff::3".parse().unwrap(),
             },
         ];
         let state = desired_state(&AwgConfig::default(), &router, &[]).unwrap();
@@ -834,16 +790,6 @@ mod tests {
         assert_eq!(east.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
         assert!(east.multihop);
         assert_eq!(east.afi, "ip");
-    }
-
-    #[test]
-    fn invalid_bgp_peer_address_is_an_error() {
-        let mut router = router_config();
-        router.bgp_peers = vec![BgpPeerEntry {
-            name: "bad".to_string(),
-            address: "not-an-ip".to_string(),
-        }];
-        assert!(desired_state(&AwgConfig::default(), &router, &[]).is_err());
     }
 
     #[test]

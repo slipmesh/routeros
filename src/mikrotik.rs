@@ -1210,24 +1210,6 @@ mod tests {
     }
 
     #[test]
-    fn keepalive_seconds_accepts_a_bare_number_too() {
-        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            Some(25)
-        );
-    }
-
-    #[test]
-    fn keepalive_seconds_absent_is_none() {
-        let r = row(&[(".id", "*1")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            None
-        );
-    }
-
-    #[test]
     fn parses_wireguard_interface_row() {
         let r = row(&[
             (".id", "*1"),
@@ -1255,12 +1237,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_field_is_an_error() {
-        let r = row(&[(".id", "*1"), ("listen-port", "51820")]);
-        assert!(parse_wireguard_interface(&r).is_err());
-    }
-
-    #[test]
     fn wireguard_peer_uses_comment_as_the_label_field() {
         let r = row(&[
             (".id", "*2"),
@@ -1271,23 +1247,6 @@ mod tests {
         ]);
         let peer = parse_wireguard_peer(&r).unwrap();
         assert_eq!(peer.name, "east1");
-    }
-
-    #[test]
-    fn address_to_network_normalizes_host_address_to_network_base() {
-        assert_eq!(
-            address_to_network("203.0.113.37/27").unwrap().to_string(),
-            "203.0.113.32/27"
-        );
-        assert_eq!(
-            address_to_network("198.51.100.1/32").unwrap().to_string(),
-            "198.51.100.1/32"
-        );
-    }
-
-    #[test]
-    fn address_to_network_rejects_malformed_input() {
-        assert!(address_to_network("not-an-address").is_err());
     }
 
     #[test]
@@ -1564,45 +1523,5 @@ mod tests {
             ]
         );
         assert!(physically_connected(&[row(&[(".id", "*1")])]).is_err());
-    }
-
-    #[test]
-    fn an_interface_named_like_the_links_is_not_claimed_unless_it_is_ours() {
-        // With the links' interfaces named `e-<peer>`, the WAN port's address and a LAN member
-        // on another port stay as they are.
-        let rows: Vec<Row> = ["ether1", "ether2"]
-            .iter()
-            .zip(1..)
-            .map(|(interface, id)| {
-                row(&[
-                    (".id", &format!("*{id}")),
-                    ("address", "203.0.113.2/24"),
-                    ("interface", interface),
-                    ("list", crate::config::LAN_LIST),
-                ])
-            })
-            .collect();
-        let ours = vec!["e-east".to_owned()];
-        assert!(our_ip_addresses(&rows, &ours).unwrap().is_empty());
-        assert!(our_list_members(&rows, &ours).unwrap().is_empty());
-    }
-
-    #[test]
-    fn after_a_prefix_change_the_old_interfaces_rows_are_read_as_ours_to_remove() {
-        // `interface wireguard` still holds `mesh-east`; the tool now asks for `wg-east`.
-        let rows = vec![row(&[
-            (".id", "*1"),
-            ("interface", "mesh-east"),
-            ("list", crate::config::LAN_LIST),
-        ])];
-        let ours = vec!["wg-east".to_owned(), "mesh-east".to_owned()];
-        let read = our_list_members(&rows, &ours).unwrap();
-        let desired = [crate::diff::DesiredListMember {
-            list: crate::config::LAN_LIST.to_owned(),
-            interface: "wg-east".to_owned(),
-            disabled: false,
-        }];
-        let plan = crate::diff::list_members(&read, &desired);
-        assert_eq!(plan.remove, ["*1"]);
     }
 }

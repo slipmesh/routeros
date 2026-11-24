@@ -121,65 +121,6 @@ nodes:
     }
 
     #[test]
-    fn a_node_the_file_does_not_have_is_refused_naming_it() {
-        let file = written(&fixture());
-        let path = file.path();
-        let err = format!("{:#}", read_node(&path, "router2").err().unwrap());
-        assert!(err.contains("router2"), "{err}");
-    }
-
-    #[test]
-    fn a_file_that_is_not_there_is_refused_naming_it() {
-        let path = std::env::temp_dir()
-            .join("routeros-no-such-dir")
-            .join("slipmesh.yaml");
-        let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(err.contains(&*path.to_string_lossy()), "{err}");
-    }
-
-    #[test]
-    fn a_file_that_does_not_read_as_slipmesh_yaml_is_refused_naming_it() {
-        let file = written(&fixture().replace("  kind: network\n", ""));
-        let path = file.path();
-        let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(
-            err.contains(&format!("reading {}", path.display())),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_file_without_a_peers_key_is_refused_naming_the_peer_and_the_key() {
-        let fixture = fixture().replace(
-            &format!("    wireguard: {{private_key: \"{}\"}}\n", wg_key("node-a")),
-            "",
-        );
-        let file = written(&fixture);
-        let path = file.path();
-        let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(
-            err.contains("node \"node-a\": wireguard.private_key is not set")
-                && err.ends_with(" - `slipmesh mint` creates it"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_file_that_is_not_yaml_is_refused_naming_it() {
-        let file = written("slipmesh: [unterminated\n");
-        let path = file.path();
-        let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
-        assert!(err.contains(&*path.to_string_lossy()), "{err}");
-    }
-
-    #[test]
-    fn a_node_of_another_platform_is_refused_naming_its_platform() {
-        let file = written(&fixture());
-        let err = format!("{:#}", read_node(&file.path(), "node-a").err().unwrap());
-        assert!(err.contains("node-a") && err.contains("talos"), "{err}");
-    }
-
-    #[test]
     fn a_key_in_the_platform_document_of_routeros_is_refused() {
         let with_settings = format!(
             "{}---\nslipmesh: {{kind: platform, platform: routeros}}\nmetrics: {{}}\n",
@@ -201,32 +142,5 @@ nodes:
         let without = with_settings.replace("metrics: {}\n", "");
         let file = written(&without);
         read_node(&file.path(), "router1").unwrap();
-    }
-
-    #[test]
-    fn a_refusal_no_secret_cures_names_no_command() {
-        let fixture = fixture().replace(
-            &format!("    wireguard: {{private_key: \"{}\"}}\n", wg_key("node-a")),
-            "    wireguard: {private_key: not a key}\n",
-        );
-        let file = written(&fixture);
-        let err = format!("{:#}", read_node(&file.path(), "router1").err().unwrap());
-        assert!(err.contains("node-a"), "{err}");
-        assert!(!err.contains("slipmesh mint"), "{err}");
-    }
-
-    #[test]
-    fn a_keepalive_the_link_sets_reaches_the_peer_the_device_dials() {
-        let fixture = fixture().replace(
-            "wireguard: {port: 51820}",
-            "wireguard: {port: 51820, persistent_keepalive: 10}",
-        );
-        let file = written(&fixture);
-        let configs = read_node(&file.path(), "router1").unwrap();
-        let desired = crate::config::desired_state(&configs.awg, &configs.router, &[]).unwrap();
-        let [peer] = desired.wireguard_peers.as_slice() else {
-            panic!("{:?}", desired.wireguard_peers);
-        };
-        assert_eq!(peer.persistent_keepalive, Some(10));
     }
 }

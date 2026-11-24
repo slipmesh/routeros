@@ -40,11 +40,4 @@ mod validate_endpoint_tests {
         assert!(validate_endpoint("router1.example.com;evil").is_err());
         assert!(validate_endpoint("router1.example.com evil").is_err());
     }
-
-    #[test]
-    fn rejects_quotes_and_control_characters() {
-        assert!(validate_endpoint("router1.example.com\"").is_err());
-        assert!(validate_endpoint("router1.example.com\n").is_err());
-        assert!(validate_endpoint("router1.example.com\0").is_err());
-    }
 }

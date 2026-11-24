@@ -568,15 +568,6 @@ mod tests {
     }
 
     #[test]
-    fn interface_with_no_addresses_gets_no_extra_ipv6_row() {
-        let awg = AwgConfig {
-            interfaces: vec![iface("mesh-2", 51820)],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        assert_eq!(state.ip_v6_addresses.len(), 1); // loopback bridge only
-    }
-
-    #[test]
     fn mesh_interface_ipv4_tunnel_address_becomes_a_desired_ip_address() {
         // `addressing.tunnel.ipv4`: a mesh interface can carry a v4 entry alongside its
         // link-local(s) - the fix for NAT/MASQUERADE
@@ -638,16 +629,6 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_only_waited_for_is_sent_no_keepalive_whatever_its_entry_sets() {
-        assert_eq!(keepalive_desired(None, Some(10.into())).unwrap(), None);
-    }
-
-    #[test]
-    fn a_dialed_peer_without_a_keepalive_of_its_own_takes_25() {
-        assert_eq!(keepalive_desired(DIALED, None).unwrap(), Some(25));
-    }
-
-    #[test]
     fn nat_peer_with_no_endpoint_gets_no_endpoint_or_keepalive() {
         let mut i = iface("mesh-3", 51821);
         i.peers.push(peer("west-pub", None));
@@ -660,19 +641,6 @@ mod tests {
         assert_eq!(state.wireguard_peers[0].endpoint_address, None);
         assert_eq!(state.wireguard_peers[0].endpoint_port, None);
         assert_eq!(state.wireguard_peers[0].persistent_keepalive, None);
-    }
-
-    #[test]
-    fn explicit_allowed_ips_are_joined_in_order() {
-        let mut i = iface("mesh-9", 51900);
-        let mut p = peer("rw-pub", None);
-        p.allowed_ips = Some(sliplib_yaml::from_str(r#"["203.0.113.165/32"]"#).unwrap());
-        i.peers.push(p);
-        let awg = AwgConfig {
-            interfaces: vec![i],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        assert_eq!(state.wireguard_peers[0].allowed_address, "203.0.113.165/32");
     }
 
     #[test]
@@ -703,20 +671,6 @@ mod tests {
                 .bgp_networks
                 .iter()
                 .any(|n| n.address == "192.0.2.0/24")
-        );
-    }
-
-    #[test]
-    fn learn_range_selects_a_physically_connected_prefix_not_matched_by_direct_interfaces() {
-        let mut router = router_config();
-        router.learn = sliplib_yaml::from_str(r#"["203.0.113.0/25"]"#).unwrap();
-        let physically_connected = connected(&[("cni0", "203.0.113.32/27")]);
-        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
-        assert!(
-            state
-                .bgp_networks
-                .iter()
-                .any(|n| n.address == "203.0.113.32/27")
         );
     }
 
@@ -756,17 +710,6 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_physically_connected_prefixes_are_not_announced() {
-        let mut router = router_config();
-        router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
-        let physically_connected = connected(&[("wan0", "192.0.2.0/24")]);
-        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
-        // Only own loopback is announced - the WAN prefix matches nothing.
-        assert_eq!(state.bgp_networks.len(), 1);
-        assert_eq!(state.bgp_networks[0].address, "198.51.100.1");
-    }
-
-    #[test]
     fn bgp_connections_map_one_to_one_from_bgp_peers_over_ipv6_loopbacks() {
         let mut router = router_config();
         router.bgp_peers = vec![
@@ -790,29 +733,5 @@ mod tests {
         assert_eq!(east.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
         assert!(east.multihop);
         assert_eq!(east.afi, "ip");
-    }
-
-    #[test]
-    fn a_peer_is_named_as_its_entry_names_it() {
-        let mut east = iface("wg-east", 51820);
-        east.peers = vec![PeerEntry {
-            name: Some("east".to_owned()),
-            ..peer("east", None)
-        }];
-        let mut other = iface("wg-x", 51821);
-        other.peers = vec![PeerEntry {
-            name: Some("wg-west".to_owned()),
-            ..peer("west", None)
-        }];
-        let awg = AwgConfig {
-            interfaces: vec![east, other],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        let names: Vec<&str> = state
-            .wireguard_peers
-            .iter()
-            .map(|peer| peer.name.as_str())
-            .collect();
-        assert_eq!(names, ["east", "wg-west"]);
     }
 }

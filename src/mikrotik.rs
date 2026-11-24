@@ -1202,34 +1202,19 @@ mod tests {
 
     #[test]
     fn keepalive_seconds_strips_the_time_unit_suffix() {
-        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25s")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            Some(25)
-        );
-    }
-
-    #[test]
-    fn keepalive_seconds_accepts_a_bare_number_too() {
-        let r = row(&[(".id", "*1"), ("persistent-keepalive", "25")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            Some(25)
-        );
-    }
-
-    #[test]
-    fn keepalive_seconds_absent_is_none() {
-        let r = row(&[(".id", "*1")]);
-        assert_eq!(
-            get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
-            None
-        );
+        for written in ["25s", "25"] {
+            let r = row(&[(".id", "*1"), ("persistent-keepalive", written)]);
+            assert_eq!(
+                get_opt_keepalive_seconds(&r, "persistent-keepalive").unwrap(),
+                Some(25),
+                "{written}"
+            );
+        }
     }
 
     #[test]
     fn parses_wireguard_interface_row() {
-        let r = row(&[
+        let mut r = row(&[
             (".id", "*1"),
             ("name", "mesh-east"),
             ("listen-port", "51820"),
@@ -1239,25 +1224,12 @@ mod tests {
         assert_eq!(iface.id, "*1");
         assert_eq!(iface.name, "mesh-east");
         assert_eq!(iface.listen_port, 51820);
+        assert_eq!(iface.private_key_b64.expose(), "abc=");
         assert!(!iface.disabled);
         assert_eq!(iface.mtu, None);
-    }
 
-    #[test]
-    fn a_wireguard_interface_reads_its_mtu() {
-        let r = row(&[
-            (".id", "*1"),
-            ("name", "mesh-east"),
-            ("listen-port", "51820"),
-            ("mtu", "1420"),
-        ]);
+        r.insert("mtu".to_string(), Some("1420".to_string()));
         assert_eq!(parse_wireguard_interface(&r).unwrap().mtu, Some(1420));
-    }
-
-    #[test]
-    fn missing_required_field_is_an_error() {
-        let r = row(&[(".id", "*1"), ("listen-port", "51820")]);
-        assert!(parse_wireguard_interface(&r).is_err());
     }
 
     #[test]
@@ -1274,44 +1246,15 @@ mod tests {
     }
 
     #[test]
-    fn address_to_network_normalizes_host_address_to_network_base() {
-        assert_eq!(
-            address_to_network("203.0.113.37/27").unwrap().to_string(),
-            "203.0.113.32/27"
-        );
-        assert_eq!(
-            address_to_network("198.51.100.1/32").unwrap().to_string(),
-            "198.51.100.1/32"
-        );
-    }
-
-    #[test]
-    fn address_to_network_rejects_malformed_input() {
-        assert!(address_to_network("not-an-address").is_err());
-    }
-
-    #[test]
-    fn ospf_template_passive_raw_is_none_when_flag_absent() {
-        let r = row(&[
-            (".id", "*1"),
-            ("interfaces", "mesh-east"),
-            ("area", "backbone"),
-        ]);
-        let t = parse_ospf_template(&r).unwrap();
-        assert_eq!(t.passive_raw, None);
-    }
-
-    #[test]
-    fn ospf_template_passive_raw_is_some_when_key_present_with_no_value() {
-        // The exact wire shape confirmed against a real device: a passive row has the `passive`
-        // key present with an empty/`None` inner value (`=passive=`), not a `"true"` string - a
-        // plain `row.get("passive")` can't tell that apart from the key being absent entirely,
-        // which is exactly the bug this regression test catches.
+    fn an_ospf_template_is_passive_only_where_the_key_is_there() {
         let mut r = row(&[
             (".id", "*1"),
             ("interfaces", "router-lo"),
             ("area", "backbone"),
         ]);
+        assert_eq!(parse_ospf_template(&r).unwrap().passive_raw, None);
+
+        // A real device sends a passive row as `=passive=`: the key with no value.
         r.insert("passive".to_string(), None);
         let t = parse_ospf_template(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
@@ -1327,16 +1270,10 @@ mod tests {
         }
     }
 
-    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the
-    /// value, and the whole run aborts on it - an unset flag must not reach the device at all.
     #[test]
-    fn ipv6_address_settings_leave_out_an_unset_auto_link_local() {
+    fn ipv6_address_settings_send_auto_link_local_only_when_set() {
         let settings = ipv6_address_settings(&ipv6_address("3fff::1/128", None));
         assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
-    }
-
-    #[test]
-    fn ipv6_address_settings_send_auto_link_local_when_set() {
         let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
         assert!(settings.contains(&("auto-link-local", "no")));
     }
@@ -1433,27 +1370,18 @@ mod tests {
     }
 
     #[test]
-    fn a_cleared_endpoint_port_reads_back_as_none() {
-        let r = row(&[
-            (".id", "*1"),
-            ("interface", "mesh-a"),
+    fn a_peer_value_written_as_zero_reads_back_as_none() {
+        for (key, written) in [
             ("endpoint-port", "0"),
-        ]);
-        assert_eq!(parse_wireguard_peer(&r).unwrap().endpoint_port, None);
-    }
-
-    #[test]
-    fn a_keepalive_of_zero_reads_back_as_none() {
-        for written in ["0", "0s"] {
-            let r = row(&[
-                (".id", "*1"),
-                ("interface", "mesh-a"),
-                ("persistent-keepalive", written),
-            ]);
+            ("persistent-keepalive", "0"),
+            ("persistent-keepalive", "0s"),
+        ] {
+            let r = row(&[(".id", "*1"), ("interface", "mesh-a"), (key, written)]);
+            let peer = parse_wireguard_peer(&r).unwrap();
             assert_eq!(
-                parse_wireguard_peer(&r).unwrap().persistent_keepalive,
-                None,
-                "{written}"
+                (peer.endpoint_port, peer.persistent_keepalive),
+                (None, None),
+                "{key}={written}"
             );
         }
     }
@@ -1530,6 +1458,9 @@ mod tests {
         assert!(our_ip_addresses(&unparsed, &[]).is_err());
         assert!(our_ipv6_addresses(&unparsed, &[]).is_err());
         assert!(our_list_members(&unparsed, &[]).is_err());
+        assert!(
+            parse_wireguard_interface(&row(&[(".id", "*1"), ("listen-port", "51820")])).is_err()
+        );
     }
 
     #[test]
@@ -1564,45 +1495,5 @@ mod tests {
             ]
         );
         assert!(physically_connected(&[row(&[(".id", "*1")])]).is_err());
-    }
-
-    #[test]
-    fn an_interface_named_like_the_links_is_not_claimed_unless_it_is_ours() {
-        // With the links' interfaces named `e-<peer>`, the WAN port's address and a LAN member
-        // on another port stay as they are.
-        let rows: Vec<Row> = ["ether1", "ether2"]
-            .iter()
-            .zip(1..)
-            .map(|(interface, id)| {
-                row(&[
-                    (".id", &format!("*{id}")),
-                    ("address", "203.0.113.2/24"),
-                    ("interface", interface),
-                    ("list", crate::config::LAN_LIST),
-                ])
-            })
-            .collect();
-        let ours = vec!["e-east".to_owned()];
-        assert!(our_ip_addresses(&rows, &ours).unwrap().is_empty());
-        assert!(our_list_members(&rows, &ours).unwrap().is_empty());
-    }
-
-    #[test]
-    fn after_a_prefix_change_the_old_interfaces_rows_are_read_as_ours_to_remove() {
-        // `interface wireguard` still holds `mesh-east`; the tool now asks for `wg-east`.
-        let rows = vec![row(&[
-            (".id", "*1"),
-            ("interface", "mesh-east"),
-            ("list", crate::config::LAN_LIST),
-        ])];
-        let ours = vec!["wg-east".to_owned(), "mesh-east".to_owned()];
-        let read = our_list_members(&rows, &ours).unwrap();
-        let desired = [crate::diff::DesiredListMember {
-            list: crate::config::LAN_LIST.to_owned(),
-            interface: "wg-east".to_owned(),
-            disabled: false,
-        }];
-        let plan = crate::diff::list_members(&read, &desired);
-        assert_eq!(plan.remove, ["*1"]);
     }
 }

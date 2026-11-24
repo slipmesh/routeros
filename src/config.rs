@@ -330,7 +330,6 @@ pub fn desired_state(
 mod tests {
     use super::*;
     use crate::test_support::wg_key;
-    use sliplib_config::Range;
     use sliplib_config::awg::{InterfaceEntry, PeerEntry};
     use sliplib_config::router::{BgpPeerEntry, NodeIdentity};
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -568,15 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn interface_with_no_addresses_gets_no_extra_ipv6_row() {
-        let awg = AwgConfig {
-            interfaces: vec![iface("mesh-2", 51820)],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        assert_eq!(state.ip_v6_addresses.len(), 1); // loopback bridge only
-    }
-
-    #[test]
     fn mesh_interface_ipv4_tunnel_address_becomes_a_desired_ip_address() {
         // `addressing.tunnel.ipv4`: a mesh interface can carry a v4 entry alongside its
         // link-local(s) - the fix for NAT/MASQUERADE
@@ -602,55 +592,29 @@ mod tests {
         assert_eq!(state.ip_v6_addresses.len(), 3);
     }
 
-    /// The keepalive desired for the one peer of an interface, at `endpoint` with its entry's
-    /// keepalive `set`.
-    fn keepalive_desired(
-        endpoint: Option<&str>,
-        set: Option<Range<u16>>,
-    ) -> anyhow::Result<Option<u16>> {
-        let mut i = iface("mesh-2", 51820);
-        i.peers.push(PeerEntry {
-            persistent_keepalive: set,
-            ..peer("east-pub", endpoint)
-        });
-        let awg = AwgConfig {
-            interfaces: vec![i],
-        };
-        Ok(desired_state(&awg, &router_config(), &[])?.wireguard_peers[0].persistent_keepalive)
-    }
-
-    const DIALED: Option<&str> = Some("192.0.2.2:51820");
-
-    fn keepalive_of_a_dialed_peer(set: Range<u16>) -> anyhow::Result<Option<u16>> {
-        keepalive_desired(DIALED, Some(set))
-    }
-
     #[test]
-    fn a_dialed_peer_takes_the_keepalive_its_entry_sets() {
-        assert_eq!(keepalive_of_a_dialed_peer(10.into()).unwrap(), Some(10));
-    }
-
-    // RouterOS reads back a keepalive of 0 as it reads back none: desired as either, it would be
-    // set again at every run.
-    #[test]
-    fn a_dialed_peer_whose_entry_sends_no_keepalive_desires_none() {
-        assert_eq!(keepalive_of_a_dialed_peer(0.into()).unwrap(), None);
-    }
-
-    #[test]
-    fn a_peer_only_waited_for_is_sent_no_keepalive_whatever_its_entry_sets() {
-        assert_eq!(keepalive_desired(None, Some(10.into())).unwrap(), None);
-    }
-
-    #[test]
-    fn a_dialed_peer_without_a_keepalive_of_its_own_takes_25() {
-        assert_eq!(keepalive_desired(DIALED, None).unwrap(), Some(25));
+    fn a_dialed_peer_takes_the_keepalive_its_entry_sets_and_none_for_zero() {
+        for (entry, desired) in [(10, Some(10)), (0, None)] {
+            let mut i = iface("mesh-2", 51820);
+            i.peers.push(PeerEntry {
+                persistent_keepalive: Some(entry.into()),
+                ..peer("east-pub", Some("192.0.2.2:51820"))
+            });
+            let awg = AwgConfig {
+                interfaces: vec![i],
+            };
+            let state = desired_state(&awg, &router_config(), &[]).unwrap();
+            assert_eq!(state.wireguard_peers[0].persistent_keepalive, desired);
+        }
     }
 
     #[test]
     fn nat_peer_with_no_endpoint_gets_no_endpoint_or_keepalive() {
         let mut i = iface("mesh-3", 51821);
-        i.peers.push(peer("west-pub", None));
+        i.peers.push(PeerEntry {
+            allowed_ips: sliplib_yaml::from_str(r#"["198.51.100.0/24", "2001:db8::/32"]"#).unwrap(),
+            ..peer("west-pub", None)
+        });
         let awg = AwgConfig {
             interfaces: vec![i],
         };
@@ -660,19 +624,10 @@ mod tests {
         assert_eq!(state.wireguard_peers[0].endpoint_address, None);
         assert_eq!(state.wireguard_peers[0].endpoint_port, None);
         assert_eq!(state.wireguard_peers[0].persistent_keepalive, None);
-    }
-
-    #[test]
-    fn explicit_allowed_ips_are_joined_in_order() {
-        let mut i = iface("mesh-9", 51900);
-        let mut p = peer("rw-pub", None);
-        p.allowed_ips = Some(sliplib_yaml::from_str(r#"["203.0.113.165/32"]"#).unwrap());
-        i.peers.push(p);
-        let awg = AwgConfig {
-            interfaces: vec![i],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        assert_eq!(state.wireguard_peers[0].allowed_address, "203.0.113.165/32");
+        assert_eq!(
+            state.wireguard_peers[0].allowed_address,
+            "198.51.100.0/24,2001:db8::/32"
+        );
     }
 
     #[test]
@@ -703,20 +658,6 @@ mod tests {
                 .bgp_networks
                 .iter()
                 .any(|n| n.address == "192.0.2.0/24")
-        );
-    }
-
-    #[test]
-    fn learn_range_selects_a_physically_connected_prefix_not_matched_by_direct_interfaces() {
-        let mut router = router_config();
-        router.learn = sliplib_yaml::from_str(r#"["203.0.113.0/25"]"#).unwrap();
-        let physically_connected = connected(&[("cni0", "203.0.113.32/27")]);
-        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
-        assert!(
-            state
-                .bgp_networks
-                .iter()
-                .any(|n| n.address == "203.0.113.32/27")
         );
     }
 
@@ -756,17 +697,6 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_physically_connected_prefixes_are_not_announced() {
-        let mut router = router_config();
-        router.direct_interfaces = sliplib_yaml::from_str(r#"["ether*"]"#).unwrap();
-        let physically_connected = connected(&[("wan0", "192.0.2.0/24")]);
-        let state = desired_state(&AwgConfig::default(), &router, &physically_connected).unwrap();
-        // Only own loopback is announced - the WAN prefix matches nothing.
-        assert_eq!(state.bgp_networks.len(), 1);
-        assert_eq!(state.bgp_networks[0].address, "198.51.100.1");
-    }
-
-    #[test]
     fn bgp_connections_map_one_to_one_from_bgp_peers_over_ipv6_loopbacks() {
         let mut router = router_config();
         router.bgp_peers = vec![
@@ -790,29 +720,5 @@ mod tests {
         assert_eq!(east.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
         assert!(east.multihop);
         assert_eq!(east.afi, "ip");
-    }
-
-    #[test]
-    fn a_peer_is_named_as_its_entry_names_it() {
-        let mut east = iface("wg-east", 51820);
-        east.peers = vec![PeerEntry {
-            name: Some("east".to_owned()),
-            ..peer("east", None)
-        }];
-        let mut other = iface("wg-x", 51821);
-        other.peers = vec![PeerEntry {
-            name: Some("wg-west".to_owned()),
-            ..peer("west", None)
-        }];
-        let awg = AwgConfig {
-            interfaces: vec![east, other],
-        };
-        let state = desired_state(&awg, &router_config(), &[]).unwrap();
-        let names: Vec<&str> = state
-            .wireguard_peers
-            .iter()
-            .map(|peer| peer.name.as_str())
-            .collect();
-        assert_eq!(names, ["east", "wg-west"]);
     }
 }

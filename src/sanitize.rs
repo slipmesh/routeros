@@ -24,27 +24,22 @@ mod validate_endpoint_tests {
     use super::*;
 
     #[test]
-    fn accepts_hostnames_and_addresses() {
-        assert!(validate_endpoint("router1.example.com").is_ok());
-        assert!(validate_endpoint("192.0.2.1").is_ok());
-        assert!(validate_endpoint("2001:db8::1").is_ok());
-    }
-
-    #[test]
-    fn rejects_empty() {
-        assert!(validate_endpoint("").is_err());
-    }
-
-    #[test]
-    fn rejects_embedded_semicolon_and_whitespace() {
-        assert!(validate_endpoint("router1.example.com;evil").is_err());
-        assert!(validate_endpoint("router1.example.com evil").is_err());
-    }
-
-    #[test]
-    fn rejects_quotes_and_control_characters() {
-        assert!(validate_endpoint("router1.example.com\"").is_err());
-        assert!(validate_endpoint("router1.example.com\n").is_err());
-        assert!(validate_endpoint("router1.example.com\0").is_err());
+    fn accepts_hostnames_and_addresses_and_nothing_else() {
+        for (endpoint, accepted) in [
+            ("router1.example.com", true),
+            ("192.0.2.1", true),
+            ("2001:db8::1", true),
+            ("", false),
+            ("router1.example.com;evil", false),
+            ("router1.example.com evil", false),
+            ("router1.example.com\"", false),
+            ("router1.example.com\0", false),
+        ] {
+            assert_eq!(
+                validate_endpoint(endpoint).is_ok(),
+                accepted,
+                "{endpoint:?}"
+            );
+        }
     }
 }

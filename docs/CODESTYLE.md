@@ -36,7 +36,8 @@
 
 - Types and functions say what they are for, not how.
 - A new test is named for the behaviour it pins, as a sentence:
-  `an_unset_port_defaults_to_the_api_ssl_port`. Older tests with short names keep them.
+  `a_dialed_peer_takes_the_keepalive_its_entry_sets_and_none_for_zero`. Older tests with short
+  names keep them.
 - `///` on a field of `Cli` is its `--help` text, so it says what the flag does.
 
 ## Error handling
@@ -61,8 +62,8 @@
 ## Tests
 
 - Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most; in
-  `diff.rs` one named module per keyed table and three shared ones (`plan_tests`, `singleton_tests`,
-  `passive_flag_tests`); `validate_endpoint_tests` in `sanitize.rs`.
+  `diff.rs` one named module per keyed table and two shared ones (`plan_tests`,
+  `singleton_tests`); `validate_endpoint_tests` in `sanitize.rs`.
   `tests/cli.rs` runs the binary as a caller does.
 - A test pins behaviour of this repository's code, not another crate's or anything that holds by
   construction. A unit test pins what an error names, not its wording; `tests/cli.rs` pins the log

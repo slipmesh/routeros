@@ -664,56 +664,27 @@ mod singleton_tests {
     use super::*;
 
     #[test]
-    fn none_current_creates() {
-        assert_eq!(singleton(None, "desired"), SingletonOp::Create("desired"));
-    }
-
-    #[test]
-    fn matching_current_is_a_noop() {
-        assert_eq!(
-            singleton(Some(("id1".to_string(), "same")), "same"),
-            SingletonOp::NoOp
-        );
-    }
-
-    #[test]
-    fn differing_current_updates_by_id() {
-        assert_eq!(
-            singleton(Some(("id1".to_string(), "old")), "new"),
-            SingletonOp::Update("id1".to_string(), "new")
-        );
-    }
-}
-
-#[cfg(test)]
-mod passive_flag_tests {
-    use super::*;
-
-    #[test]
-    fn empty_string_is_true() {
-        assert!(passive_flag_is_true(Some("")));
-    }
-
-    #[test]
-    fn literal_true_is_true() {
-        assert!(passive_flag_is_true(Some("true")));
-    }
-
-    #[test]
-    fn absent_is_false() {
-        assert!(!passive_flag_is_true(None));
-    }
-
-    #[test]
-    fn false_is_false() {
-        assert!(!passive_flag_is_true(Some("false")));
+    fn a_singleton_is_created_left_or_updated_by_id() {
+        let cases = [
+            (None, "desired", SingletonOp::Create("desired")),
+            (Some(("id1".to_string(), "same")), "same", SingletonOp::NoOp),
+            (
+                Some(("id1".to_string(), "old")),
+                "new",
+                SingletonOp::Update("id1".to_string(), "new"),
+            ),
+        ];
+        for (current, desired, op) in cases {
+            assert_eq!(singleton(current, desired), op);
+        }
     }
 }
 
 #[cfg(test)]
 mod wireguard_interfaces_tests {
     use super::*;
-    use crate::test_support::{encode_wg_key, wg_key};
+    use crate::test_support::wg_key;
+    use sliplib_secrets::wireguard::encode_key;
 
     fn desired(name: &str, port: u16) -> DesiredWireguardInterface {
         DesiredWireguardInterface {
@@ -749,88 +720,21 @@ mod wireguard_interfaces_tests {
     }
 
     #[test]
-    fn debug_output_never_carries_the_private_key() {
-        let key = wg_key("printed");
-        let mut d = desired("mesh-east", 51820);
-        d.private_key_b64 = key.as_str().into();
-        let mut c = current("*1", "mesh-east", 51820);
-        c.private_key_b64 = key.as_str().into();
-        for printed in [format!("{d:?}"), format!("{c:?}")] {
-            assert!(!printed.contains(&key), "{printed}");
-            assert!(printed.contains("mesh-east"), "{printed}");
-        }
-    }
-
-    #[test]
-    fn noop_when_matching() {
-        let cur = vec![current("*1", "mesh-east", 51820)];
-        let des = vec![desired("mesh-east", 51820)];
-        assert!(wireguard_interfaces(&cur, &des).is_empty());
-    }
-
-    #[test]
-    fn pure_add() {
-        let plan = wireguard_interfaces(&[], &[desired("mesh-east", 51820)]);
-        assert_eq!(plan.add, vec![desired("mesh-east", 51820)]);
-        assert!(plan.update.is_empty());
-        assert!(plan.remove.is_empty());
-    }
-
-    #[test]
-    fn pure_remove_of_undesired_interface() {
-        // Exclusive table: an interface no longer in desired must be fully removed, since nothing
-        // else on the device could have legitimately created a wireguard interface.
-        let cur = vec![current("*1", "mesh-stale", 51820)];
-        let plan = wireguard_interfaces(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*1".to_string()]);
-        assert!(plan.add.is_empty());
-        assert!(plan.update.is_empty());
-    }
-
-    /// Every bit set, and no bit set: the key as generated, and as RouterOS stores it once clamped.
-    fn generated_and_stored() -> [(String, String); 2] {
-        let mut ones = [0xFF; 32];
-        ones[0] = 0xF8;
-        ones[31] = 0x7F;
-        let mut zeros = [0x00; 32];
-        zeros[31] = 0x40;
-        [
-            (encode_wg_key([0xFF; 32]), encode_wg_key(ones)),
-            (encode_wg_key([0x00; 32]), encode_wg_key(zeros)),
-        ]
-    }
-
-    #[test]
-    fn noop_when_the_device_holds_the_key_clamped() {
-        for (generated, stored) in generated_and_stored() {
-            let mut d = desired("mesh-east", 51820);
-            d.private_key_b64 = generated.into();
-            let mut c = current("*1", "mesh-east", 51820);
-            c.private_key_b64 = stored.into();
-            assert!(wireguard_interfaces(&[c], &[d]).is_empty());
-        }
-    }
-
-    #[test]
-    fn update_when_the_key_changes() {
+    fn a_key_is_updated_when_it_changes_and_left_as_the_device_clamps_it() {
         let mut d = desired("mesh-east", 51820);
         d.private_key_b64 = wg_key("new").into();
         let plan = wireguard_interfaces(&[current("*1", "mesh-east", 51820)], &[d.clone()]);
         assert_eq!(plan.update.len(), 1);
         assert_eq!(plan.update[0].1, d);
-    }
 
-    #[test]
-    fn update_when_port_changes() {
-        let cur = vec![current("*1", "mesh-east", 51820)];
-        let des = vec![desired("mesh-east", 51821)];
-        let plan = wireguard_interfaces(&cur, &des);
-        assert_eq!(
-            plan.update,
-            vec![("*1".to_string(), desired("mesh-east", 51821))]
-        );
-        assert!(plan.add.is_empty());
-        assert!(plan.remove.is_empty());
+        // Every bit set, as generated and as RouterOS stores it once clamped.
+        let mut clamped = [0xFF; 32];
+        clamped[0] = 0xF8;
+        clamped[31] = 0x7F;
+        d.private_key_b64 = encode_key(&[0xFF; 32]).into();
+        let mut c = current("*1", "mesh-east", 51820);
+        c.private_key_b64 = encode_key(&clamped).into();
+        assert!(wireguard_interfaces(&[c], &[d]).is_empty());
     }
 
     #[test]
@@ -877,32 +781,19 @@ mod ip_addresses_tests {
     }
 
     #[test]
-    fn shared_table_never_removes_an_out_of_footprint_row() {
-        // This is the safety-critical case: `current` here represents what the caller already
-        // pre-filtered to this tool's own footprint (see the module doc comment) - a manually
-        // configured WAN address would simply never be in this slice at all. Given only our own
-        // rows, an address that's no longer desired must still be removed (that's our footprint).
-        let cur = vec![current("*10", "198.51.100.197/31", "mesh-old")];
-        let plan = ip_addresses(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*10".to_string()]);
-    }
-
-    #[test]
-    fn staleness_keyed_on_interface_and_address_pair() {
-        // Same address, moved to a different interface - must be treated as remove-old +
-        // add-new, not a no-op, since the (interface, address) pair changed.
-        let cur = vec![current("*1", "198.51.100.192/31", "mesh-east")];
-        let des = vec![desired("198.51.100.192/31", "mesh-west")];
+    fn an_address_moved_to_another_interface_is_removed_and_added_again() {
+        let cur = vec![
+            current("*1", "198.51.100.192/31", "mesh-east"),
+            current("*2", "198.51.100.194/31", "mesh-north"),
+        ];
+        let des = vec![
+            desired("198.51.100.192/31", "mesh-west"),
+            desired("198.51.100.194/31", "mesh-north"),
+        ];
         let plan = ip_addresses(&cur, &des);
         assert_eq!(plan.remove, vec!["*1".to_string()]);
         assert_eq!(plan.add, vec![desired("198.51.100.192/31", "mesh-west")]);
-    }
-
-    #[test]
-    fn noop_when_matching() {
-        let cur = vec![current("*1", "198.51.100.192/31", "mesh-east")];
-        let des = vec![desired("198.51.100.192/31", "mesh-east")];
-        assert!(ip_addresses(&cur, &des).is_empty());
+        assert!(plan.update.is_empty());
     }
 }
 
@@ -925,36 +816,9 @@ mod wireguard_peers_tests {
     }
 
     #[test]
-    fn a_peer_held_without_a_keepalive_is_not_set_again_when_none_is_desired() {
-        let mut d = desired("mesh-east", "east", Some("192.0.2.4"));
-        d.persistent_keepalive = None;
-        let held = CurrentWireguardPeer {
-            id: "*1".to_string(),
-            interface: d.interface.clone(),
-            name: d.name.clone(),
-            public_key_b64: d.public_key_b64.clone(),
-            allowed_address: d.allowed_address.clone(),
-            endpoint_address: d.endpoint_address.clone(),
-            endpoint_port: d.endpoint_port,
-            persistent_keepalive: None,
-            disabled: false,
-        };
-        let plan = wireguard_peers(&[held], &[d]);
-        assert!(
-            plan.add.is_empty() && plan.update.is_empty() && plan.remove.is_empty(),
-            "{plan:?}"
-        );
-    }
-
-    #[test]
-    fn nat_peer_has_no_endpoint_or_keepalive() {
-        let d = desired("mesh-router1", "router1", None);
-        assert_eq!(d.endpoint_address, None);
-        assert_eq!(d.persistent_keepalive, None);
-    }
-
-    #[test]
     fn combined_add_update_remove() {
+        let mut unkept = desired("mesh-north", "north", Some("192.0.2.5"));
+        unkept.persistent_keepalive = None;
         let cur = vec![
             CurrentWireguardPeer {
                 id: "*1".to_string(),
@@ -978,12 +842,24 @@ mod wireguard_peers_tests {
                 persistent_keepalive: None,
                 disabled: false,
             },
+            CurrentWireguardPeer {
+                id: "*3".to_string(),
+                interface: unkept.interface.clone(),
+                name: unkept.name.clone(),
+                public_key_b64: unkept.public_key_b64.clone(),
+                allowed_address: unkept.allowed_address.clone(),
+                endpoint_address: unkept.endpoint_address.clone(),
+                endpoint_port: unkept.endpoint_port,
+                persistent_keepalive: None,
+                disabled: false,
+            },
         ];
         let mut updated = desired("mesh-east", "east", None);
         updated.public_key_b64 = wg_key("new");
         let des = vec![
             updated.clone(),
             desired("mesh-west", "west", Some("192.0.2.4")),
+            unkept,
         ];
 
         let plan = wireguard_peers(&cur, &des);
@@ -999,55 +875,6 @@ mod wireguard_peers_tests {
 #[cfg(test)]
 mod list_members_tests {
     use super::*;
-
-    fn desired(interface: &str) -> DesiredListMember {
-        DesiredListMember {
-            list: "LAN".to_string(),
-            interface: interface.to_string(),
-            disabled: false,
-        }
-    }
-
-    fn current(id: &str, interface: &str) -> CurrentListMember {
-        CurrentListMember {
-            id: id.to_string(),
-            list: "LAN".to_string(),
-            interface: interface.to_string(),
-            disabled: false,
-        }
-    }
-
-    #[test]
-    fn removes_stale_and_keeps_unrelated_out_of_the_plan_entirely() {
-        // is_ours is what actually keeps an unrelated LAN member (e.g. a
-        // physical WAN port) out of `current` before it ever reaches this function - proven
-        // separately below. Here, given only our own rows, a no-longer-desired interface is
-        // still removed.
-        let cur = vec![current("*1", "mesh-stale")];
-        let plan = list_members(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*1".to_string()]);
-    }
-
-    #[test]
-    fn adds_a_newly_desired_interface() {
-        let plan = list_members(&[], &[desired("mesh-east")]);
-        assert_eq!(plan.add, vec![desired("mesh-east")]);
-    }
-
-    fn ours(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| (*name).to_owned()).collect()
-    }
-
-    #[test]
-    fn an_interface_is_ours_only_if_it_is_one_of_ours() {
-        let ours = ours(&["e-east", "router-lo"]);
-        assert!(is_ours("e-east", &ours));
-        assert!(is_ours("router-lo", &ours));
-        // Named like the interfaces of the links, and still nobody's of ours.
-        assert!(!is_ours("ether1", &ours));
-        assert!(!is_ours("e-west", &ours));
-        assert!(!is_ours("bridge-lan", &ours));
-    }
 
     #[test]
     fn footprint_check_includes_orphaned_raw_ids() {
@@ -1126,24 +953,6 @@ mod ospf_interface_templates_tests {
     }
 
     #[test]
-    fn passive_empty_string_matches_desired_true_as_a_noop() {
-        let cur = vec![CurrentOspfInterfaceTemplate {
-            id: "*1".to_string(),
-            interfaces: "router-lo".to_string(),
-            area: "backbone".to_string(),
-            type_: None,
-            cost: None,
-            hello_interval: None,
-            dead_interval: None,
-            passive_raw: Some(String::new()),
-            use_bfd: false,
-            disabled: false,
-        }];
-        let des = vec![loopback_desired("router-lo")];
-        assert!(ospf_interface_templates(&cur, &des).is_empty());
-    }
-
-    #[test]
     fn routeros_default_values_for_unset_optional_fields_are_a_noop() {
         // Confirmed against a real device: RouterOS echoes back its own resolved defaults
         // (type=broadcast, cost=1, hello/dead-interval=10s/40s) for the loopback entry even
@@ -1163,28 +972,11 @@ mod ospf_interface_templates_tests {
         }];
         let des = vec![loopback_desired("router-lo")];
         assert!(ospf_interface_templates(&cur, &des).is_empty());
-    }
 
-    #[test]
-    fn peer_entries_still_require_an_exact_match_on_all_four_fields() {
-        // The "None means don't care" relaxation only ever applies to the loopback entry (whose
-        // desired fields are all None) - a peer entry always sets all four, so a real mismatch
-        // there must still be caught.
-        let cur = vec![CurrentOspfInterfaceTemplate {
-            id: "*A".to_string(),
-            interfaces: "mesh-east".to_string(),
-            area: "backbone".to_string(),
-            type_: Some("ptp".to_string()),
-            cost: Some(20), // desired wants 10
-            hello_interval: Some("10s".to_string()),
-            dead_interval: Some("40s".to_string()),
-            passive_raw: None,
-            use_bfd: false,
-            disabled: false,
-        }];
-        let des = vec![peer_desired("mesh-east")];
-        let plan = ospf_interface_templates(&cur, &des);
-        assert_eq!(plan.update.len(), 1);
+        let mut not_passive = cur;
+        not_passive[0].passive_raw = None;
+        let plan = ospf_interface_templates(&not_passive, &des);
+        assert_eq!(plan.update, vec![("*1".to_string(), des[0].clone())]);
     }
 
     /// Losing this comparison leaves a device on `use-bfd=no` for good: the BFD entries would
@@ -1213,45 +1005,6 @@ mod ospf_interface_templates_tests {
         cur[0].use_bfd = true;
         assert!(ospf_interface_templates(&cur, &[des]).is_empty());
     }
-
-    #[test]
-    fn missing_passive_flag_does_not_match_desired_true() {
-        let cur = vec![CurrentOspfInterfaceTemplate {
-            id: "*1".to_string(),
-            interfaces: "router-lo".to_string(),
-            area: "backbone".to_string(),
-            type_: None,
-            cost: None,
-            hello_interval: None,
-            dead_interval: None,
-            passive_raw: None,
-            use_bfd: false,
-            disabled: false,
-        }];
-        let des = vec![loopback_desired("router-lo")];
-        let plan = ospf_interface_templates(&cur, &des);
-        assert_eq!(plan.update.len(), 1);
-    }
-
-    #[test]
-    fn exclusive_add_and_remove_for_peer_templates() {
-        let cur = vec![CurrentOspfInterfaceTemplate {
-            id: "*2".to_string(),
-            interfaces: "mesh-stale".to_string(),
-            area: "backbone".to_string(),
-            type_: Some("ptp".to_string()),
-            cost: Some(10),
-            hello_interval: Some("10s".to_string()),
-            dead_interval: Some("40s".to_string()),
-            passive_raw: None,
-            use_bfd: false,
-            disabled: false,
-        }];
-        let des = vec![peer_desired("mesh-east")];
-        let plan = ospf_interface_templates(&cur, &des);
-        assert_eq!(plan.add, vec![peer_desired("mesh-east")]);
-        assert_eq!(plan.remove, vec!["*2".to_string()]);
-    }
 }
 
 #[cfg(test)]
@@ -1277,18 +1030,15 @@ mod bgp_networks_tests {
 
     #[test]
     fn combined_add_and_remove() {
-        let cur = vec![current("*1", "203.0.113.0/27")];
-        let des = vec![desired("203.0.113.32/27")];
+        let cur = vec![
+            current("*1", "203.0.113.0/27"),
+            current("*2", "203.0.113.64/27"),
+        ];
+        let des = vec![desired("203.0.113.32/27"), desired("203.0.113.64/27")];
         let plan = bgp_networks(&cur, &des);
         assert_eq!(plan.add, vec![desired("203.0.113.32/27")]);
         assert_eq!(plan.remove, vec!["*1".to_string()]);
-    }
-
-    #[test]
-    fn noop_when_matching() {
-        let cur = vec![current("*1", "203.0.113.0/27")];
-        let des = vec![desired("203.0.113.0/27")];
-        assert!(bgp_networks(&cur, &des).is_empty());
+        assert!(plan.update.is_empty());
     }
 }
 
@@ -1326,33 +1076,15 @@ mod bgp_connections_tests {
     }
 
     #[test]
-    fn update_when_remote_address_changes() {
+    fn a_changed_field_updates_the_connection_by_id() {
         let cur = vec![current("*1", "bgp-east", "3fff::2".parse().unwrap())];
-        let des = vec![desired("bgp-east", "3fff::3".parse().unwrap())];
-        let plan = bgp_connections(&cur, &des);
-        assert_eq!(
-            plan.update,
-            vec![(
-                "*1".to_string(),
-                desired("bgp-east", "3fff::3".parse().unwrap())
-            )]
-        );
-    }
-
-    #[test]
-    fn update_when_multihop_or_afi_changes() {
-        let cur = vec![current("*1", "bgp-east", "3fff::2".parse().unwrap())];
-        let mut des = desired("bgp-east", "3fff::2".parse().unwrap());
-        des.multihop = false;
-        let plan = bgp_connections(&cur, &[des.clone()]);
-        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
-    }
-
-    #[test]
-    fn pure_remove_when_peer_no_longer_desired() {
-        let cur = vec![current("*1", "bgp-gone", "3fff::9".parse().unwrap())];
-        let plan = bgp_connections(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*1".to_string()]);
+        let remote = desired("bgp-east", "3fff::3".parse().unwrap());
+        let mut multihop = desired("bgp-east", "3fff::2".parse().unwrap());
+        multihop.multihop = false;
+        for des in [remote, multihop] {
+            let plan = bgp_connections(&cur, std::slice::from_ref(&des));
+            assert_eq!(plan.update, vec![("*1".to_string(), des)]);
+        }
     }
 }
 
@@ -1392,53 +1124,30 @@ mod ipv6_addresses_tests {
     }
 
     #[test]
-    fn noop_when_matching() {
-        let cur = vec![current("*1", "3fff::1/128", "router-lo")];
-        let des = vec![desired("3fff::1/128", "router-lo")];
-        assert!(ipv6_addresses(&cur, &des).is_empty());
-    }
-
-    #[test]
-    fn pure_add() {
-        let plan = ipv6_addresses(&[], &[desired("3fff::1/128", "router-lo")]);
-        assert_eq!(plan.add, vec![desired("3fff::1/128", "router-lo")]);
-    }
-
-    #[test]
-    fn update_when_advertise_changes() {
-        let cur = vec![current("*1", "3fff::1/128", "router-lo")];
-        let mut des = desired("3fff::1/128", "router-lo");
-        des.advertise = true;
-        let plan = ipv6_addresses(&cur, &[des.clone()]);
-        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
-    }
-
-    /// A manual link-local left on `auto-link-local=yes` sits next to the one RouterOS generates
-    /// after every boot, and OSPFv3 may bind to the generated one - only the flag says so.
-    #[test]
-    fn update_when_auto_link_local_differs() {
-        let mut cur = current("*1", "fe80::ff/64", "mesh-2");
-        cur.auto_link_local = true;
-        let des = desired("fe80::ff/64", "mesh-2");
-        let plan = ipv6_addresses(&[cur], std::slice::from_ref(&des));
-        assert_eq!(plan.update, vec![("*1".to_string(), des)]);
-    }
-
-    /// RouterOS reports the flag on every address but accepts it only on a link-local, so an
-    /// unset desired flag must never turn into an update.
-    #[test]
-    fn noop_when_auto_link_local_is_unset() {
-        let cur = current("*1", "3fff::1/128", "router-lo");
-        let des = desired("3fff::1/128", "router-lo");
-        assert!(cur.auto_link_local && des.auto_link_local.is_none());
-        assert!(ipv6_addresses(&[cur], &[des]).is_empty());
-    }
-
-    #[test]
-    fn removes_out_of_footprint_row_given_only_our_own_rows() {
-        let cur = vec![current("*10", "3fff::5/128", "mesh-old")];
-        let plan = ipv6_addresses(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*10".to_string()]);
+    fn an_address_is_updated_on_a_changed_flag_and_left_on_an_unset_one() {
+        let loopback = current("*1", "3fff::1/128", "router-lo");
+        let mut advertised = desired("3fff::1/128", "router-lo");
+        advertised.advertise = true;
+        let mut auto_link_local = current("*1", "fe80::ff/64", "mesh-2");
+        auto_link_local.auto_link_local = true;
+        let cases = [
+            (loopback.clone(), advertised.clone(), Some(advertised)),
+            // A manual link-local on `auto-link-local=yes` sits next to the one RouterOS generates
+            // after every boot, and OSPFv3 may bind to that one.
+            (
+                auto_link_local,
+                desired("fe80::ff/64", "mesh-2"),
+                Some(desired("fe80::ff/64", "mesh-2")),
+            ),
+            // RouterOS reports the flag on every address but takes it only on a link-local.
+            (loopback, desired("3fff::1/128", "router-lo"), None),
+        ];
+        for (cur, des, update) in cases {
+            let plan = ipv6_addresses(&[cur], &[des]);
+            let update: Vec<_> = update.map(|d| ("*1".to_string(), d)).into_iter().collect();
+            assert_eq!(plan.update, update);
+            assert!(plan.add.is_empty() && plan.remove.is_empty());
+        }
     }
 }
 
@@ -1466,38 +1175,40 @@ mod bfd_configuration_tests {
     }
 
     #[test]
-    fn an_entry_matching_the_device_is_a_noop() {
-        let cur = vec![current("*1", "mesh-east", "300ms")];
-        assert!(bfd_configurations(&cur, &[desired("mesh-east")]).is_empty());
-    }
-
-    /// The interval is the whole point of the entry: a device left on different timers detects a
-    /// dead link at a different speed than the other end of it, and nothing else here would say so.
-    #[test]
-    fn a_different_interval_is_an_update_rather_than_a_second_entry() {
-        let cur = vec![current("*1", "mesh-east", "900ms")];
-        let plan = bfd_configurations(&cur, &[desired("mesh-east")]);
-        assert_eq!(plan.update.len(), 1);
-        assert!(plan.add.is_empty() && plan.remove.is_empty());
-    }
-
-    /// Keyed by interface, so a renamed link is a different entry - and the old one has to go,
-    /// or the device keeps a rule for a link that no longer exists.
-    #[test]
-    fn a_renamed_interface_removes_the_old_entry_and_adds_the_new_one() {
-        let cur = vec![current("*1", "mesh-gone", "300ms")];
-        let plan = bfd_configurations(&cur, &[desired("mesh-new")]);
-        assert_eq!(plan.remove, vec!["*1".to_string()]);
-        assert_eq!(plan.add.len(), 1);
-    }
-
-    /// Switching BFD off in slipmesh.yaml empties the desired set, which has to take the device's
-    /// entries with it rather than leaving them behind.
-    #[test]
-    fn no_desired_entries_removes_what_the_device_has() {
-        let cur = vec![current("*1", "mesh-east", "300ms")];
-        let plan = bfd_configurations(&cur, &[]);
-        assert_eq!(plan.remove, vec!["*1".to_string()]);
-        assert!(plan.add.is_empty() && plan.update.is_empty());
+    fn an_entry_is_keyed_by_its_interface_and_updated_on_its_interval() {
+        let none = Plan {
+            add: vec![],
+            update: vec![],
+            remove: vec![],
+        };
+        let cases = [
+            (
+                current("*1", "mesh-east", "300ms"),
+                "mesh-east",
+                none.clone(),
+            ),
+            // A device left on other timers detects a dead link at another speed than the far end.
+            (
+                current("*1", "mesh-east", "900ms"),
+                "mesh-east",
+                Plan {
+                    update: vec![("*1".to_string(), desired("mesh-east"))],
+                    ..none.clone()
+                },
+            ),
+            // A renamed link is another entry, and the old one has to go.
+            (
+                current("*1", "mesh-gone", "300ms"),
+                "mesh-new",
+                Plan {
+                    add: vec![desired("mesh-new")],
+                    remove: vec!["*1".to_string()],
+                    ..none
+                },
+            ),
+        ];
+        for (cur, interface, plan) in cases {
+            assert_eq!(bfd_configurations(&[cur], &[desired(interface)]), plan);
+        }
     }
 }

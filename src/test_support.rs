@@ -3,11 +3,6 @@
 
 use sliplib_secrets::wireguard::encode_key;
 
-/// Base64 of 32 bytes - the wire form of a WireGuard key.
-pub fn encode_wg_key(bytes: [u8; 32]) -> String {
-    encode_key(&bytes)
-}
-
 /// A WireGuard-shaped key made of `label` repeated to 32 bytes: distinct per label, the same on
 /// every run, and plain text once decoded, so it can't be mistaken for a real one.
 pub fn wg_key(label: &str) -> String {
@@ -15,5 +10,5 @@ pub fn wg_key(label: &str) -> String {
     for (b, l) in bytes.iter_mut().zip(label.bytes().cycle()) {
         *b = l;
     }
-    encode_wg_key(bytes)
+    encode_key(&bytes)
 }

@@ -26,8 +26,8 @@ fn no_settings(files: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The configs of `node`, a node of `routeros`: this tool configures no other. A refusal names its
-/// file once; one about the node or a secret its configs need names the node or link.
+/// The configs of `node`, a node of `routeros`: this tool configures no other. A refusal of a
+/// document names its file; one about the node or a secret its configs need names the node or link.
 pub fn read_node(inputs: &[PathBuf], node: &str) -> anyhow::Result<NodeConfigs> {
     let files = File::open(inputs)?;
     // A refusal of the document names its file.
@@ -151,11 +151,23 @@ nodes:
         for (path, text) in paths.iter().zip([&one, &architecture, &secrets]) {
             std::fs::write(path, text).unwrap();
         }
-        let desired = |inputs: &[std::path::PathBuf]| {
+        let desired = |inputs: &[PathBuf]| {
             let configs = read_node(inputs, "router1").unwrap();
             crate::config::desired_state(&configs.awg, &configs.router, &[]).unwrap()
         };
         assert_eq!(desired(&paths[..1]), desired(&paths[1..]));
+    }
+
+    #[test]
+    fn a_network_without_its_interface_prefix_is_refused_naming_the_files_read() {
+        let without = fixture().replace("  interface_prefix: mesh-\n", "");
+        let file = written(&without);
+        let err = format!("{:#}", read_node(&[file.path()], "router1").err().unwrap());
+        let path = file.path().display().to_string();
+        assert!(
+            err.starts_with(&format!("reading {path}: ")) && err.matches(&path).count() == 1,
+            "{err}"
+        );
     }
 
     #[test]

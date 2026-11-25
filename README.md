@@ -58,11 +58,17 @@ Requires:
 
 ## Breaking changes
 
+After v1.15.0-beta.0+sm.3, `slipmesh-routeros` reads files of format version 2 alone; a file of
+version 1 is converted as "Converting a file by hand" in sliplib's
+[`docs/slipmesh-yaml-v1-to-v2.md`](https://github.com/slipmesh/sliplib/blob/main/docs/slipmesh-yaml-v1-to-v2.md)
+says.
+
 After v1.15.0-beta.0+sm.3, the files are given with `--in`, one or several; `--config` is gone,
-with no alias and no default file. One file that holds two `network` or two `groups` documents is
-laid, where it was refused. A refusal of the network names the key's line and its file, where it
-named the document's line and a column, and a refusal of a document names its file in its place:
-the `reading <file>` line before either is gone.
+with no alias and no default file. For one file, what changes: one that holds two `network` or two
+`groups` documents is laid, where it was refused; a refusal of a key or a value of the network
+names the key's line and its file, where it named the document's line and a column; and a refusal
+of a document names its file in its place, where a `reading <file>` line came before it. Two
+`platform` documents name the file at each line.
 
 ## Upgrading from the patch file
 

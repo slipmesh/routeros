@@ -9,7 +9,7 @@ use std::path::PathBuf;
     name = env!("CARGO_BIN_NAME"),
     bin_name = env!("CARGO_BIN_NAME"),
     version,
-    about = "Converges a MikroTik RouterOS device to the desired state of its node in the files of slipmesh.yaml"
+    about = "Converges a MikroTik RouterOS device to its node's desired state in slipmesh.yaml"
 )]
 pub struct Cli {
     /// The device's node in the files.

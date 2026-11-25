@@ -1,5 +1,5 @@
-//! The one-shot pipeline: read the files of slipmesh.yaml once, connect to the device once, converge, exit.
-//! No state is carried between invocations.
+//! The one-shot pipeline: read the files of slipmesh.yaml once, connect to the device once,
+//! converge, exit. No state is carried between invocations.
 
 use crate::cli::Cli;
 use crate::config;

@@ -68,7 +68,7 @@ with no alias and no default file. For one file, what changes: one that holds tw
 `groups` documents is laid, where it was refused; a refusal of a key or a value of the network
 names the key's line and its file, where it named the document's line and a column; and a refusal
 of a document names its file in its place, where a `reading <file>` line came before it. Two
-`platform` documents name the file at each line.
+`platform` documents in one file name it once. A refusal names its file once.
 
 ## Upgrading from the patch file
 

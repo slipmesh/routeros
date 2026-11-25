@@ -26,8 +26,8 @@ fn no_settings(files: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The configs of `node`, a node of `routeros`: this tool configures no other. A refusal of a
-/// document names its file; one about the node or a secret its configs need names the node or link.
+/// The configs of `node`, a node of `routeros`: this tool configures no other. A refusal names its
+/// file once; one about the node or a secret its configs need names the node or link.
 pub fn read_node(inputs: &[PathBuf], node: &str) -> anyhow::Result<NodeConfigs> {
     let files = File::open(inputs)?;
     // A refusal of the document names its file.
@@ -166,6 +166,21 @@ nodes:
         let path = file.path().display().to_string();
         assert!(
             err.starts_with(&format!("reading {path}: ")) && err.matches(&path).count() == 1,
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_of_a_documents_aim_names_its_file_once() {
+        let aimed = format!(
+            "{}---\nslipmesh: {{kind: patch, platform: talos, include: [nogroup]}}\nkind: Example\n",
+            fixture()
+        );
+        let file = written(&aimed);
+        let err = format!("{:#}", read_node(&[file.path()], "router1").err().unwrap());
+        let path = file.path().display().to_string();
+        assert!(
+            err.contains("nogroup") && err.matches(&path).count() == 1,
             "{err}"
         );
     }

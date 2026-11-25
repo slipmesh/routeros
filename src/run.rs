@@ -1,4 +1,4 @@
-//! The one-shot pipeline: read slipmesh.yaml once, connect to the device once, converge, exit.
+//! The one-shot pipeline: read the files of slipmesh.yaml once, connect to the device once, converge, exit.
 //! No state is carried between invocations.
 
 use crate::cli::Cli;
@@ -14,7 +14,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<ConvergeReport> {
         .map_err(|_| anyhow::anyhow!("failed to install default rustls crypto provider"))?;
 
     let configs =
-        slipmesh::read_node(&cli.config, &cli.node).context("failed to read the node's configs")?;
+        slipmesh::read_node(&cli.inputs, &cli.node).context("failed to read the node's configs")?;
 
     let credentials = credentials::from_env()?;
 

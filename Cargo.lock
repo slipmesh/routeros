@@ -724,11 +724,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_ignored"
-version = "0.1.14"
+name = "serde_path_to_error"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
 dependencies = [
+ "itoa",
  "serde",
  "serde_core",
 ]
@@ -750,12 +751,11 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sliplib-config"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "indexmap",
  "serde",
- "serde_ignored",
  "sliplib-net",
  "sliplib-secrets",
  "sliplib-yaml",
@@ -764,8 +764,8 @@ dependencies = [
 
 [[package]]
 name = "sliplib-mesh"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "sliplib-config",
  "sliplib-net",
@@ -775,24 +775,24 @@ dependencies = [
 
 [[package]]
 name = "sliplib-net"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "ipnet",
 ]
 
 [[package]]
 name = "sliplib-runtime"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "sliplib-secrets"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "base64",
  "curve25519-dalek",
@@ -803,10 +803,11 @@ dependencies = [
 
 [[package]]
 name = "sliplib-yaml"
-version = "0.23.0"
-source = "git+https://github.com/slipmesh/sliplib?tag=v0.23.0#d87313f3b11aa0801ecd1fe50666bd0bd40511d3"
+version = "0.24.1"
+source = "git+https://github.com/slipmesh/sliplib?tag=v0.24.1#51ad75621b0a9ad241d97f30e935e18d7960a0b1"
 dependencies = [
  "serde",
+ "serde_path_to_error",
  "thiserror",
  "yaml_serde",
 ]

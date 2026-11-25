@@ -1,12 +1,13 @@
-//! The node's desired state from `slipmesh.yaml`: its `awg` and `router` configs, computed and
-//! checked by `sliplib-mesh`. The file is read as plain text; decrypting it is the caller's.
+//! The node's desired state from the files of `slipmesh.yaml`: its `awg` and `router` configs,
+//! computed and checked by `sliplib-mesh`. The files are read as plain text; decrypting them is the
+//! caller's.
 
 use anyhow::Context;
 use sliplib_config::v2::{File, Platform};
 use sliplib_mesh::Mesh;
 use sliplib_mesh::render::{NodeConfigs, node_configs};
 use sliplib_yaml::Mapping;
-use std::path::Path;
+use std::path::PathBuf;
 
 /// `routeros` has no settings.
 fn no_settings(files: &File) -> anyhow::Result<()> {
@@ -25,14 +26,20 @@ fn no_settings(files: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The configs of `node`, a node of `routeros`: this tool configures no other. An error reading or
-/// parsing the file names the file; one about the node or a secret its configs need names the
-/// node or link.
-pub fn read_node(path: &Path, node: &str) -> anyhow::Result<NodeConfigs> {
-    let reading = || format!("reading {}", path.display());
-    let files = File::open(path)?;
-    no_settings(&files).with_context(reading)?;
-    let network = Mesh::of(&files).with_context(reading)?;
+/// The configs of `node`, a node of `routeros`: this tool configures no other. A refusal names its
+/// file once; one about the node or a secret its configs need names the node or link.
+pub fn read_node(inputs: &[PathBuf], node: &str) -> anyhow::Result<NodeConfigs> {
+    let files = File::open(inputs)?;
+    // A refusal of the document names its file.
+    no_settings(&files)?;
+    // About the network as a whole, naming no document.
+    let network = Mesh::of(&files).with_context(|| {
+        let shown: Vec<String> = inputs
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        format!("reading {}", shown.join(", "))
+    })?;
     network.node_on(node, Platform::Routeros)?;
     Ok(node_configs(&network, node)?)
 }
@@ -99,7 +106,7 @@ nodes:
     fn a_nodes_configs_come_from_slipmesh_yaml() {
         let file = written(&fixture());
         let path = file.path();
-        let configs = read_node(&path, "router1").unwrap();
+        let configs = read_node(&[path], "router1").unwrap();
         assert_eq!(configs.router.bgp_as, 64512);
         let direct: Vec<&str> = configs
             .router
@@ -121,6 +128,64 @@ nodes:
     }
 
     #[test]
+    fn one_file_and_its_split_into_architecture_and_secrets_give_the_same_desired_state() {
+        let one = fixture();
+        let keys: Vec<&str> = one
+            .lines()
+            .filter(|line| line.trim_start().starts_with("wireguard: {private_key"))
+            .collect();
+        assert_eq!(keys.len(), 2);
+        let architecture: String = one
+            .lines()
+            .filter(|line| !keys.contains(line))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let secrets = format!(
+            "slipmesh: {{kind: network, version: 2, revision: 1}}\nnodes:\n  node-a:\n{}\n  \
+             router1:\n{}\n",
+            keys[0], keys[1]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let paths =
+            ["slipmesh.yaml", "mesh.yaml", "secrets.yaml"].map(|name| dir.path().join(name));
+        for (path, text) in paths.iter().zip([&one, &architecture, &secrets]) {
+            std::fs::write(path, text).unwrap();
+        }
+        let desired = |inputs: &[PathBuf]| {
+            let configs = read_node(inputs, "router1").unwrap();
+            crate::config::desired_state(&configs.awg, &configs.router, &[]).unwrap()
+        };
+        assert_eq!(desired(&paths[..1]), desired(&paths[1..]));
+    }
+
+    #[test]
+    fn a_network_without_its_interface_prefix_is_refused_naming_the_files_read() {
+        let without = fixture().replace("  interface_prefix: mesh-\n", "");
+        let file = written(&without);
+        let err = format!("{:#}", read_node(&[file.path()], "router1").err().unwrap());
+        let path = file.path().display().to_string();
+        assert!(
+            err.starts_with(&format!("reading {path}: ")) && err.matches(&path).count() == 1,
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_of_a_documents_aim_names_its_file_once() {
+        let aimed = format!(
+            "{}---\nslipmesh: {{kind: patch, platform: talos, include: [nogroup]}}\nkind: Example\n",
+            fixture()
+        );
+        let file = written(&aimed);
+        let err = format!("{:#}", read_node(&[file.path()], "router1").err().unwrap());
+        let path = file.path().display().to_string();
+        assert!(
+            err.contains("nogroup") && err.matches(&path).count() == 1,
+            "{err}"
+        );
+    }
+
+    #[test]
     fn a_key_in_the_platform_document_of_routeros_is_refused() {
         let with_settings = format!(
             "{}---\nslipmesh: {{kind: platform, platform: routeros}}\nmetrics: {{}}\n",
@@ -128,19 +193,24 @@ nodes:
         );
         let file = written(&with_settings);
         let path = file.path();
-        let err = format!("{:#}", read_node(&path, "router1").err().unwrap());
+        let err = format!(
+            "{:#}",
+            read_node(std::slice::from_ref(&path), "router1")
+                .err()
+                .unwrap()
+        );
         let line = fixture().lines().count() + 2;
         assert_eq!(
             err,
             format!(
-                "reading {}: the `kind: platform` document at line {line}: `routeros` has no \
-                 settings, and this one holds `metrics` - take it out",
+                "the `kind: platform` document at line {line} of {}: `routeros` has no settings, \
+                 and this one holds `metrics` - take it out",
                 path.display()
             )
         );
         // Without the key, the document stands.
         let without = with_settings.replace("metrics: {}\n", "");
         let file = written(&without);
-        read_node(&file.path(), "router1").unwrap();
+        read_node(&[file.path()], "router1").unwrap();
     }
 }

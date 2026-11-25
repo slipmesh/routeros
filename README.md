@@ -1,34 +1,37 @@
 # routeros
 
 One-shot CLI tool that converges a MikroTik RouterOS device into the mesh's desired state:
-WireGuard tunnels plus OSPF/iBGP dynamic routing, computed from the device's node in
-`slipmesh.yaml` by [`sliplib-mesh`](https://github.com/slipmesh/sliplib) - the same `awg` and
+WireGuard tunnels plus OSPF/iBGP dynamic routing, computed from the device's node in the files
+of `slipmesh.yaml` by [`sliplib-mesh`](https://github.com/slipmesh/sliplib) - the same `awg` and
 `router` configs every platform's tool computes for its nodes.
 
 It applies that state over RouterOS's native binary API
 ([`mikrotik-rs`](https://github.com/ferrohd/mikrotik-rs)), never SSH/ansible. It is **not** a
 Kubernetes client and has no dependency on Kubernetes anywhere: it runs like `ansible-playbook` -
-invoke it manually, from cron, or a systemd timer - reads one file, connects to the router once,
-converges, and exits.
+invoke it manually, from cron, or a systemd timer - reads the files once, connects to the router
+once, converges, and exits.
 
 ## Usage
 
 ```sh
-slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]
+slipmesh-routeros --node=router1 [--check] [--diff] --in mesh.yaml secrets.yaml
 ```
 
-- `--node` - the device's node in `slipmesh.yaml`, a node of `platform: routeros`. A node of
+- `--node` - the device's node in the files, a node of `platform: routeros`. A node of
   another platform is refused, naming its platform.
-- `--config` - `slipmesh.yaml` as plain text, `slipmesh.yaml` in the current directory by default.
-  The tool reads plaintext and knows nothing of encryption: whoever keeps the file encrypted
-  decrypts it for the run and passes the plaintext path as `--config`.
+- `--in` - the files of `slipmesh.yaml` as plain text, one or several; it takes several values and
+  may be repeated. They are laid over each other as sliplib's
+  [several files](https://github.com/slipmesh/sliplib/blob/main/docs/slipmesh-yaml.md#several-files)
+  says: one file, or the same network split into its architecture and its secrets, gives the same
+  desired state. The tool reads plaintext and knows nothing of encryption: whoever keeps a file
+  encrypted decrypts it for the run and passes the plaintext path to `--in`.
 
 - `--check` - compute the diff but don't apply it to the device.
 - `--diff` - print the computed add/update/remove plan to stdout (works with or without `--check`).
 
 Requires:
 
-- `slipmesh.yaml` in format version 2, with `mesh.interface_prefix`, the node, and every secret its
+- The files in format version 2, with `mesh.interface_prefix`, the node, and every secret its
   configs need: the `wireguard.private_key` of the node and of each of its peers. A file that is
   missing or malformed, lacks one of them, or is of format version 1 is a fatal error before the
   device is touched. The refusal of a missing key or of a file without `mesh.interface_prefix`
@@ -53,9 +56,23 @@ Requires:
 - Network access to the device's RouterOS API-SSL port (8729), with a TLS certificate the host's
   own trust store already validates.
 
+## Breaking changes
+
+After v1.15.0-beta.0+sm.3, `slipmesh-routeros` reads files of format version 2 alone; a file of
+version 1 is converted as "Converting a file by hand" in sliplib's
+[`docs/slipmesh-yaml-v1-to-v2.md`](https://github.com/slipmesh/sliplib/blob/main/docs/slipmesh-yaml-v1-to-v2.md)
+says.
+
+After v1.15.0-beta.0+sm.3, the files are given with `--in`, one or several; `--config` is gone,
+with no alias and no default file. For one file, what changes: one that holds two `network` or two
+`groups` documents is laid, where it was refused; a refusal of a key or a value of the network
+names the key's line and its file, where it named the document's line and a column; and a refusal
+of a document names its file in its place, where a `reading <file>` line came before it. Two
+`platform` documents in one file name it once. A refusal names its file once.
+
 ## Upgrading from the patch file
 
-- `--patches-dir` is gone: pass `--config` with the path of `slipmesh.yaml` instead.
+- `--patches-dir` is gone: pass `--in` with the path of `slipmesh.yaml` instead.
 - The tool now reads the whole decrypted `slipmesh.yaml`, which holds every node's private key;
   the patch file held only this router's key and its peers' public keys.
   The plaintext should exist only for the run: decrypt it for that run and remove it after, never

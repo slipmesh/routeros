@@ -1,5 +1,5 @@
-//! CLI surface: `slipmesh-routeros --node=router1 [--check] [--diff] [--config slipmesh.yaml]`,
-//! modeled on `ansible-playbook --check --diff`.
+//! CLI surface: `slipmesh-routeros --node=router1 [--check] [--diff] --in <files>...`, modeled on
+//! `ansible-playbook --check --diff`.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -9,10 +9,10 @@ use std::path::PathBuf;
     name = env!("CARGO_BIN_NAME"),
     bin_name = env!("CARGO_BIN_NAME"),
     version,
-    about = "Converges a MikroTik RouterOS device to the desired state of its node in slipmesh.yaml"
+    about = "Converges a MikroTik RouterOS device to its node's desired state in slipmesh.yaml"
 )]
 pub struct Cli {
-    /// The device's node in slipmesh.yaml.
+    /// The device's node in the files.
     #[arg(long)]
     pub node: String,
 
@@ -24,9 +24,10 @@ pub struct Cli {
     #[arg(long)]
     pub diff: bool,
 
-    /// slipmesh.yaml as plain text; a wrapper that decrypts it passes its path here.
-    #[arg(long, default_value = "slipmesh.yaml")]
-    pub config: PathBuf,
+    /// The files of slipmesh.yaml as plain text, laid over each other; may be repeated. A wrapper
+    /// that decrypts them passes their paths here.
+    #[arg(long = "in", num_args = 1.., required = true)]
+    pub inputs: Vec<PathBuf>,
 }
 
 impl Cli {
@@ -40,7 +41,14 @@ mod tests {
     use super::*;
 
     fn parsed(args: &[&str]) -> Cli {
-        Cli::try_parse_from([&["slipmesh-routeros", "--node", "router1"], args].concat()).unwrap()
+        let base = [
+            "slipmesh-routeros",
+            "--node",
+            "router1",
+            "--in",
+            "slipmesh.yaml",
+        ];
+        Cli::try_parse_from([&base[..], args].concat()).unwrap()
     }
 
     #[test]

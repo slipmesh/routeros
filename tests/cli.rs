@@ -9,7 +9,7 @@ fn a_failed_run_exits_nonzero_and_logs_the_whole_error_chain() {
         .join("no-such-dir")
         .join("slipmesh.yaml");
     let output = Command::new(env!("CARGO_BIN_EXE_slipmesh-routeros"))
-        .args(["--node", "node-a", "--config"])
+        .args(["--node", "node-a", "--in"])
         .arg(&config)
         .env_remove("RUST_LOG")
         .output()
@@ -59,7 +59,7 @@ fn run_for(name: &str, node: &str) -> (bool, String) {
     let config = dir.join("slipmesh.yaml");
     std::fs::write(&config, network()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_slipmesh-routeros"))
-        .args(["--node", node, "--config"])
+        .args(["--node", node, "--in"])
         .arg(&config)
         .env_remove("RUST_LOG")
         .env_remove("SLIPMESH_ROUTEROS_HOST")

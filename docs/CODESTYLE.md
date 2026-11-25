@@ -20,7 +20,7 @@
   rows are this tool's and which commands a plan becomes, and `converge`'s report, which counts
   the plan and records its lines.
 - I/O stays in thin shims whose inputs and outputs are exactly what those modules take and give:
-  `mikrotik` talks to the device, `slipmesh` reads the file, `run` is the pipeline of one run and
+  `mikrotik` talks to the device, `slipmesh` reads the files, `run` is the pipeline of one run and
   `converge` the order the tables are applied in.
 - The mesh's config types and our other crates come from `sliplib`, by release tag; there is no
   local copy of their schema.

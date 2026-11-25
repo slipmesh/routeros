@@ -1,29 +1,12 @@
-//! Orchestrates the fixed, dependency-correct RouterOS convergence order for one run: read
-//! current state -> diff -> (optionally) apply, table by table. Thin glue - correctness lives in
-//! `diff.rs`'s tests, not here: there is no mocking framework anywhere in this ecosystem, so this
-//! module's own correctness is checked in the manual live-device pass rather than by unit tests.
-//!
-//! Order - dependency-correct, and remove-before-add within each exclusive table:
-//! 1. `interface list member` stale removal (before any interface is deleted).
-//! 2. `interface wireguard` (exclusive).
-//! 3. `interface bridge` (loopback, singleton) - before its own address can be set.
-//! 4. `ip address` (the loopback `/32`, and a mesh interface's tunnel IPv4 when the config has one).
-//! 5. `ipv6 address` (loopback ULA `/128` and the link-locals - independent of step 4, order
-//!    between the two doesn't matter).
-//! 6. `interface wireguard peers` (exclusive).
-//! 7. `interface list member` add/update (after interfaces exist).
-//! 8. `routing ospf instance` (singleton).
-//! 9. `routing ospf area` (singleton).
-//! 10. `routing bfd configuration` (exclusive) - before the templates that ask OSPF to consult
-//!     it, since RouterOS forbids any session no entry here covers.
-//! 11. `routing ospf interface-template` (exclusive).
-//! 12. `ip firewall address-list` (`bgp-networks`).
-//! 13. `routing bgp instance` (singleton).
-//! 14. `routing bgp connection` (exclusive).
+//! Reads, diffs and, unless `--check`, writes every RouterOS table of a run, in dependency order.
 
-use crate::config::{self, DesiredState};
-use crate::diff::{CurrentWireguardInterface, DesiredWireguardInterface, Plan, SingletonOp};
-use crate::mikrotik;
+use crate::config::DesiredState;
+use crate::diff::{self, CurrentWireguardInterface, DesiredWireguardInterface, Plan};
+use crate::mikrotik::{
+    self, BfdConfigurations, BgpConnections, BgpInstance, BgpNetworks, IpAddresses, Ipv6Addresses,
+    Keyed, ListMembers, LoopbackBridge, OspfArea, OspfInstance, OspfInterfaceTemplates, Singleton,
+    WireguardInterfaces, WireguardPeers,
+};
 use mikrotik_rs::MikrotikDevice;
 
 #[derive(Debug, Default)]
@@ -31,49 +14,35 @@ pub struct ConvergeReport {
     pub added: usize,
     pub updated: usize,
     pub removed: usize,
-    /// One human-readable line per add/update/remove action, across every table - what `--diff`
-    /// prints. Populated identically whether or not `apply` actually ran (see [`run`]).
+    /// One line per add, update and remove: what `--diff` prints.
     pub diff_lines: Vec<String>,
 }
 
 impl ConvergeReport {
-    /// `current` is the same slice the caller just diffed against - used to resolve a `Plan::
-    /// remove` id back to the actual row being removed, so `- table (*C)` in `--diff` output
-    /// becomes `- table: CurrentWireguardInterface { name: "mesh-node-g", ... }` instead of an
-    /// opaque RouterOS internal id nobody can act on without a separate device query.
-    fn record<C: crate::diff::HasId + std::fmt::Debug, D: std::fmt::Debug>(
-        &mut self,
-        table: &str,
-        current: &[C],
-        plan: &Plan<D>,
-    ) {
+    fn record_changes<D: std::fmt::Debug>(&mut self, table: &str, plan: &Plan<D>) {
         self.added += plan.add.len();
         self.updated += plan.update.len();
-        self.removed += plan.remove.len();
         for d in &plan.add {
             self.diff_lines.push(format!("+ {table}: {d:?}"));
         }
         for (id, d) in &plan.update {
             self.diff_lines.push(format!("~ {table} ({id}): {d:?}"));
         }
+    }
+
+    /// `current` turns a removed id back into its row for `--diff`.
+    fn record<C: crate::diff::HasId + std::fmt::Debug, D: std::fmt::Debug>(
+        &mut self,
+        table: &str,
+        current: &[C],
+        plan: &Plan<D>,
+    ) {
+        self.record_changes(table, plan);
+        self.removed += plan.remove.len();
         for id in &plan.remove {
             match current.iter().find(|c| c.id() == id) {
                 Some(c) => self.diff_lines.push(format!("- {table}: {c:?}")),
                 None => self.diff_lines.push(format!("- {table} ({id})")),
-            }
-        }
-    }
-
-    fn record_singleton<D: std::fmt::Debug>(&mut self, table: &str, op: &SingletonOp<D>) {
-        match op {
-            SingletonOp::NoOp => {}
-            SingletonOp::Create(d) => {
-                self.added += 1;
-                self.diff_lines.push(format!("+ {table}: {d:?}"));
-            }
-            SingletonOp::Update(id, d) => {
-                self.updated += 1;
-                self.diff_lines.push(format!("~ {table} ({id}): {d:?}"));
             }
         }
     }
@@ -95,16 +64,7 @@ fn only_add_update<D: Clone>(plan: &Plan<D>) -> Plan<D> {
     }
 }
 
-async fn apply_singleton<D: Clone>(
-    op: SingletonOp<D>,
-    apply: bool,
-    do_apply: impl AsyncFnOnce(SingletonOp<D>) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    if apply { do_apply(op).await } else { Ok(()) }
-}
-
-/// The interfaces of the links: those asked for, and those `interface wireguard` holds, which only
-/// this tool writes.
+/// Only this tool writes `interface wireguard`, so every interface it holds is ours.
 fn our_interfaces(
     asked: &[DesiredWireguardInterface],
     held: &[CurrentWireguardInterface],
@@ -117,10 +77,56 @@ fn our_interfaces(
         .collect()
 }
 
-/// Reads, diffs, and (if `apply`) applies every RouterOS table in the order above. `apply =
-/// false` (i.e. `--check`) still performs every read/diff step - a real connection is required
-/// either way - it just skips every `apply_*` call. Returns a full report either way, so `--diff`
-/// prints the same thing whether or not `--check` is also set.
+fn plan_of<T: Keyed>(
+    report: &mut ConvergeReport,
+    current: &[T::Current],
+    desired: &[T::Desired],
+) -> Plan<T::Desired> {
+    let plan = T::plan(current, desired);
+    report.record(T::NAME, current, &plan);
+    plan
+}
+
+async fn write<T: Keyed>(
+    device: &MikrotikDevice,
+    current: &[T::Current],
+    plan: &Plan<T::Desired>,
+    apply: bool,
+) -> anyhow::Result<()> {
+    if apply {
+        mikrotik::send(device, T::PATH, &T::commands(current, plan)).await?;
+    }
+    Ok(())
+}
+
+async fn step<T: Keyed>(
+    device: &MikrotikDevice,
+    report: &mut ConvergeReport,
+    ours: &[String],
+    desired: &[T::Desired],
+    apply: bool,
+) -> anyhow::Result<()> {
+    let current = mikrotik::read::<T>(device, ours).await?;
+    let plan = plan_of::<T>(report, &current, desired);
+    write::<T>(device, &current, &plan, apply).await
+}
+
+async fn singleton_step<T: Singleton>(
+    device: &MikrotikDevice,
+    report: &mut ConvergeReport,
+    name: &str,
+    desired: &T::Desired,
+    apply: bool,
+) -> anyhow::Result<()> {
+    let current = mikrotik::read_singleton::<T>(device, name).await?;
+    let plan = diff::singleton(current.as_ref(), desired);
+    report.record_changes(T::NAME, &plan);
+    if apply {
+        mikrotik::send(device, T::PATH, &mikrotik::commands::<T>(&plan)).await?;
+    }
+    Ok(())
+}
+
 pub async fn run(
     device: &MikrotikDevice,
     desired: &DesiredState,
@@ -128,151 +134,65 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // Read before step 1, so that the members of an interface step 2 deletes go in the same run.
-    let current_wg = mikrotik::read_wireguard_interfaces(device).await?;
+    // Read first, so that the members of an interface deleted below go in this run.
+    let current_wg = mikrotik::read::<WireguardInterfaces>(device, &[]).await?;
     let ours = our_interfaces(&desired.wireguard_interfaces, &current_wg);
 
-    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
-    let current_list_members = mikrotik::read_list_members(device, &ours).await?;
-    let list_member_plan = crate::diff::list_members(&current_list_members, &desired.list_members);
-    report.record(
-        "interface list member",
-        &current_list_members,
-        &list_member_plan,
-    );
-    let remove_only = only_remove(&list_member_plan);
-    if apply && !remove_only.is_empty() {
-        mikrotik::apply_list_members(device, &remove_only).await?;
-    }
+    // Members go before any interface is deleted.
+    let current_members = mikrotik::read::<ListMembers>(device, &ours).await?;
+    let members = plan_of::<ListMembers>(&mut report, &current_members, &desired.list_members);
+    write::<ListMembers>(device, &current_members, &only_remove(&members), apply).await?;
 
-    // 2. interface wireguard (exclusive).
-    let wg_plan = crate::diff::wireguard_interfaces(&current_wg, &desired.wireguard_interfaces);
-    report.record("interface wireguard", &current_wg, &wg_plan);
-    if apply && !wg_plan.is_empty() {
-        mikrotik::apply_wireguard_interfaces(device, &wg_plan).await?;
-    }
+    let wg =
+        plan_of::<WireguardInterfaces>(&mut report, &current_wg, &desired.wireguard_interfaces);
+    write::<WireguardInterfaces>(device, &current_wg, &wg, apply).await?;
 
-    // 3. interface bridge (loopback, singleton) - before its own address can be set.
-    let current_bridge =
-        mikrotik::read_loopback_bridge(device, &desired.loopback_bridge.name).await?;
-    let bridge_op = crate::diff::singleton(current_bridge, desired.loopback_bridge.clone());
-    report.record_singleton("interface bridge", &bridge_op);
-    apply_singleton(bridge_op, apply, async |op| {
-        mikrotik::apply_loopback_bridge(device, op).await
-    })
-    .await?;
+    // The bridge goes before its own address.
+    let bridge = &desired.loopback_bridge;
+    singleton_step::<LoopbackBridge>(device, &mut report, &bridge.name, bridge, apply).await?;
 
-    // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
     let mut our_ifaces = ours.clone();
-    our_ifaces.push(desired.loopback_bridge.name.clone());
-    let current_addrs = mikrotik::read_ip_addresses(device, &our_ifaces).await?;
-    let addr_plan = crate::diff::ip_addresses(&current_addrs, &desired.ip_addresses);
-    report.record("ip address", &current_addrs, &addr_plan);
-    if apply && !addr_plan.is_empty() {
-        mikrotik::apply_ip_addresses(device, &addr_plan).await?;
-    }
-
-    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and the links'
-    // interfaces).
-    let current_v6_addrs = mikrotik::read_ipv6_addresses(device, &our_ifaces).await?;
-    let v6_addr_plan = crate::diff::ipv6_addresses(&current_v6_addrs, &desired.ip_v6_addresses);
-    report.record("ipv6 address", &current_v6_addrs, &v6_addr_plan);
-    if apply && !v6_addr_plan.is_empty() {
-        mikrotik::apply_ipv6_addresses(device, &v6_addr_plan).await?;
-    }
-
-    // 6. interface wireguard peers (exclusive).
-    let current_peers = mikrotik::read_wireguard_peers(device).await?;
-    let peers_plan = crate::diff::wireguard_peers(&current_peers, &desired.wireguard_peers);
-    report.record("interface wireguard peers", &current_peers, &peers_plan);
-    if apply && !peers_plan.is_empty() {
-        mikrotik::apply_wireguard_peers(device, &peers_plan).await?;
-    }
-
-    // 7. interface list member add/update (after interfaces exist; remove already done in step 1).
-    let add_update_only = only_add_update(&list_member_plan);
-    if apply && !add_update_only.is_empty() {
-        mikrotik::apply_list_members(device, &add_update_only).await?;
-    }
-
-    // 8-9. routing ospf instance / ospf area (singletons).
-    let current_ospf_instance =
-        mikrotik::read_ospf_instance(device, &desired.ospf_instance.name).await?;
-    let ospf_instance_op =
-        crate::diff::singleton(current_ospf_instance, desired.ospf_instance.clone());
-    report.record_singleton("routing ospf instance", &ospf_instance_op);
-    apply_singleton(ospf_instance_op, apply, async |op| {
-        mikrotik::apply_ospf_instance(device, op).await
-    })
+    our_ifaces.push(bridge.name.clone());
+    step::<IpAddresses>(
+        device,
+        &mut report,
+        &our_ifaces,
+        &desired.ip_addresses,
+        apply,
+    )
     .await?;
 
-    let current_ospf_area = mikrotik::read_ospf_area(device, &desired.ospf_area.name).await?;
-    let ospf_area_op = crate::diff::singleton(current_ospf_area, desired.ospf_area.clone());
-    report.record_singleton("routing ospf area", &ospf_area_op);
-    apply_singleton(ospf_area_op, apply, async |op| {
-        mikrotik::apply_ospf_area(device, op).await
-    })
+    step::<Ipv6Addresses>(
+        device,
+        &mut report,
+        &our_ifaces,
+        &desired.ip_v6_addresses,
+        apply,
+    )
     .await?;
 
-    // 10. routing bfd configuration (exclusive) - before the templates that ask for it.
-    let current_bfd = mikrotik::read_bfd_configurations(device).await?;
-    let bfd_plan = crate::diff::bfd_configurations(&current_bfd, &desired.bfd_configurations);
-    report.record("routing bfd configuration", &current_bfd, &bfd_plan);
-    if apply && !bfd_plan.is_empty() {
-        mikrotik::apply_bfd_configurations(device, &bfd_plan).await?;
-    }
+    step::<WireguardPeers>(device, &mut report, &[], &desired.wireguard_peers, apply).await?;
 
-    // 11. routing ospf interface-template (exclusive).
-    let current_templates = mikrotik::read_ospf_interface_templates(device).await?;
-    let template_plan = crate::diff::ospf_interface_templates(
-        &current_templates,
-        &desired.ospf_interface_templates,
-    );
-    report.record(
-        "routing ospf interface-template",
-        &current_templates,
-        &template_plan,
-    );
-    if apply && !template_plan.is_empty() {
-        let unset_passive = crate::diff::passive_to_unset(&current_templates, &template_plan);
-        mikrotik::apply_ospf_interface_templates(device, &template_plan, &unset_passive).await?;
-    }
+    // Members are added after the interfaces exist.
+    write::<ListMembers>(device, &current_members, &only_add_update(&members), apply).await?;
 
-    // 12. ip firewall address-list (bgp-networks).
-    let current_networks = mikrotik::read_bgp_networks(device, config::BGP_NETWORKS_LIST).await?;
-    let networks_plan = crate::diff::bgp_networks(&current_networks, &desired.bgp_networks);
-    report.record(
-        "ip firewall address-list",
-        &current_networks,
-        &networks_plan,
-    );
-    if apply && !networks_plan.is_empty() {
-        mikrotik::apply_bgp_networks(device, &networks_plan).await?;
-    }
+    let instance = &desired.ospf_instance;
+    singleton_step::<OspfInstance>(device, &mut report, &instance.name, instance, apply).await?;
+    let area = &desired.ospf_area;
+    singleton_step::<OspfArea>(device, &mut report, &area.name, area, apply).await?;
 
-    // 13. routing bgp instance (singleton).
-    let current_bgp_instance =
-        mikrotik::read_bgp_instance(device, &desired.bgp_instance.name).await?;
-    let bgp_instance_op =
-        crate::diff::singleton(current_bgp_instance, desired.bgp_instance.clone());
-    report.record_singleton("routing bgp instance", &bgp_instance_op);
-    apply_singleton(bgp_instance_op, apply, async |op| {
-        mikrotik::apply_bgp_instance(device, op).await
-    })
-    .await?;
+    // BFD goes before the templates: RouterOS refuses a BFD session no entry covers.
+    step::<BfdConfigurations>(device, &mut report, &[], &desired.bfd_configurations, apply).await?;
 
-    // 14. routing bgp connection (exclusive).
-    let current_connections = mikrotik::read_bgp_connections(device).await?;
-    let connections_plan =
-        crate::diff::bgp_connections(&current_connections, &desired.bgp_connections);
-    report.record(
-        "routing bgp connection",
-        &current_connections,
-        &connections_plan,
-    );
-    if apply && !connections_plan.is_empty() {
-        mikrotik::apply_bgp_connections(device, &connections_plan).await?;
-    }
+    let templates = &desired.ospf_interface_templates;
+    step::<OspfInterfaceTemplates>(device, &mut report, &[], templates, apply).await?;
+
+    step::<BgpNetworks>(device, &mut report, &[], &desired.bgp_networks, apply).await?;
+
+    let bgp = &desired.bgp_instance;
+    singleton_step::<BgpInstance>(device, &mut report, &bgp.name, bgp, apply).await?;
+
+    step::<BgpConnections>(device, &mut report, &[], &desired.bgp_connections, apply).await?;
 
     Ok(report)
 }
@@ -302,7 +222,7 @@ mod tests {
         let ours = our_interfaces(&[], &[held]);
 
         let member = row(&[(".id", "*2"), ("list", "LAN"), ("interface", "mesh-gone")]);
-        let members = mikrotik::our_list_members(&[member], &ours).unwrap();
+        let members = mikrotik::footprint::<ListMembers>(&[member], &ours).unwrap();
         assert_eq!(crate::diff::list_members(&members, &[]).remove, ["*2"]);
 
         let address = row(&[
@@ -310,7 +230,39 @@ mod tests {
             ("address", "198.51.100.9/32"),
             ("interface", "mesh-gone"),
         ]);
-        let addresses = mikrotik::our_ip_addresses(&[address], &ours).unwrap();
+        let addresses = mikrotik::footprint::<IpAddresses>(&[address], &ours).unwrap();
         assert_eq!(crate::diff::ip_addresses(&addresses, &[]).remove, ["*3"]);
+    }
+
+    #[test]
+    fn a_plan_is_recorded_as_its_counts_and_one_line_per_row() {
+        let ip = |address: &str| crate::diff::DesiredIpAddress {
+            address: address.to_owned(),
+            interface: "router-lo".to_owned(),
+            disabled: false,
+        };
+        let held = crate::diff::CurrentIpAddress {
+            id: "*3".to_owned(),
+            address: "192.0.2.3/32".to_owned(),
+            interface: "router-lo".to_owned(),
+            disabled: false,
+        };
+        let plan = Plan {
+            add: vec![ip("192.0.2.1/32")],
+            update: vec![("*2".to_owned(), ip("192.0.2.2/32"))],
+            remove: vec!["*3".to_owned(), "*9".to_owned()],
+        };
+        let mut report = ConvergeReport::default();
+        report.record("ip address", &[held], &plan);
+        assert_eq!((report.added, report.updated, report.removed), (1, 1, 2));
+        assert_eq!(
+            report.diff_lines,
+            [
+                r#"+ ip address: DesiredIpAddress { address: "192.0.2.1/32", interface: "router-lo", disabled: false }"#,
+                r#"~ ip address (*2): DesiredIpAddress { address: "192.0.2.2/32", interface: "router-lo", disabled: false }"#,
+                r#"- ip address: CurrentIpAddress { id: "*3", address: "192.0.2.3/32", interface: "router-lo", disabled: false }"#,
+                "- ip address (*9)",
+            ]
+        );
     }
 }

@@ -16,8 +16,9 @@
 - The logic that decides anything is in modules that take and return plain values: `config` (what
   the device should look like), `diff` (the plan per table), `sanitize`, `cli`, and
   `credentials::from_lookup`; `credentials::from_env` hands it the process environment. The
-  exceptions are `mikrotik`'s row parsing, which decides what a row read from the device means,
-  and `converge`'s report, which counts the plan and records its lines.
+  exceptions are `mikrotik`'s tables, which decide what a row read from the device means, which
+  rows are this tool's and which commands a plan becomes, and `converge`'s report, which counts
+  the plan and records its lines.
 - I/O stays in thin shims whose inputs and outputs are exactly what those modules take and give:
   `mikrotik` talks to the device, `slipmesh` reads the file, `run` is the pipeline of one run and
   `converge` the order the tables are applied in.
@@ -62,8 +63,8 @@
 ## Tests
 
 - Tests sit in `#[cfg(test)]` modules at the end of the file they test: `mod tests` in most; in
-  `diff.rs` one named module per keyed table and two shared ones (`plan_tests`,
-  `singleton_tests`); `validate_endpoint_tests` in `sanitize.rs`.
+  `diff.rs` one named module per keyed table and a shared `singleton_tests`;
+  `validate_endpoint_tests` in `sanitize.rs`.
   `tests/cli.rs` runs the binary as a caller does.
 - A test pins behaviour of this repository's code, not another crate's or anything that holds by
   construction. A unit test pins what an error names, not its wording; `tests/cli.rs` pins the log
@@ -72,8 +73,9 @@
 - WireGuard keys in fixtures come from `test_support`, addresses and names from the documentation
   ranges; nothing is taken from a live config.
 - Before a pull request, run `cargo mutants` on the changed code; what it may skip is listed with
-  the reason in [`.cargo/mutants.toml`](../.cargo/mutants.toml). The device shims in `mikrotik`,
-  `converge` and `run` have no unit tests yet.
+  the reason in [`.cargo/mutants.toml`](../.cargo/mutants.toml). What reaches the device has no
+  unit test: reading a table and sending its commands in `mikrotik`, the steps in `converge`, and
+  `run`.
 
 ## Comments
 

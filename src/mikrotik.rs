@@ -1,28 +1,25 @@
-//! Thin RouterOS device shim: TLS connection, and per-table `read_*`/`apply_*` functions whose
-//! types are exactly `diff.rs`'s `Current*`/`Plan<Desired*>`: I/O stays thin here so the pure
-//! layer can carry the tests. The socket I/O is checked only against a live device.
-//!
-//! Attribute names are the ones the RouterOS API is called with here; the few not confirmed on a
-//! device say so where they are read or written. A WireGuard peer's label is kept in its
-//! `comment`.
+//! The RouterOS device shim: the connection, reading a table and sending its commands.
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
-    CurrentAddressListEntry, CurrentBfdConfiguration, CurrentBgpConnection, CurrentIpAddress,
+    self, CurrentAddressListEntry, CurrentBfdConfiguration, CurrentBgpConnection, CurrentIpAddress,
     CurrentIpv6Address, CurrentListMember, CurrentOspfInterfaceTemplate, CurrentWireguardInterface,
     CurrentWireguardPeer, DesiredAddressListEntry, DesiredBfdConfiguration, DesiredBgpConnection,
-    DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember, DesiredOspfArea,
-    DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
-    DesiredWireguardPeer, Plan,
+    DesiredBgpInstance, DesiredBridge, DesiredIpAddress, DesiredIpv6Address, DesiredListMember,
+    DesiredOspfArea, DesiredOspfInstance, DesiredOspfInterfaceTemplate, DesiredWireguardInterface,
+    DesiredWireguardPeer, HasId, Plan,
 };
 use mikrotik_rs::proto::command::Cmd;
 use mikrotik_rs::{CommandBuilder, Event, MikrotikDevice};
 use sliplib_config::router::ROUTER_LOOPBACK;
 use sliplib_net::Ipv4Net;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(crate) type Row = HashMap<String, Option<String>>;
+
+pub(crate) type Attributes = Vec<(&'static str, String)>;
 
 fn get<'a>(row: &'a Row, key: &str) -> Option<&'a str> {
     row.get(key).and_then(|v| v.as_deref())
@@ -42,15 +39,7 @@ fn get_bool_flag(row: &Row, key: &str) -> bool {
     crate::diff::passive_flag_is_true(get(row, key))
 }
 
-/// A presence-style RouterOS flag (e.g. `passive` on `routing ospf interface-template`) round-
-/// trips through the API as **key presence**, not a meaningful value - confirmed against a real
-/// device: a passive row has the `passive` key present (with an empty/`None` inner value), a
-/// non-passive row omits the key entirely (`row.get("passive")` and a plain `get()` can't tell
-/// "present with an empty value" apart from "absent", since both collapse to `None` - this checks
-/// `contains_key` instead). Normalizes to the `Some("")`/`None` shape [`crate::diff::
-/// passive_flag_is_true`] already expects. Unlike `passive`, `disabled` is *not* this style - it's
-/// always present with an explicit `"true"`/`"false"` string value, which [`get_bool_flag`]
-/// already handles correctly.
+/// A passive row has the key with no value; a plain row has no key.
 fn get_flag_presence(row: &Row, key: &str) -> Option<String> {
     row.contains_key(key).then(String::new)
 }
@@ -64,11 +53,7 @@ fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
         .transpose()
 }
 
-/// RouterOS echoes `persistent-keepalive` back with a trailing time-unit suffix (e.g. `"25s"`),
-/// even though a bare integer (interpreted as seconds) is accepted when *setting* it - confirmed
-/// against a real device, this attribute's exact wire shape not having been independently
-/// verified before. `hello-interval`/`dead-interval` are stored as raw strings
-/// elsewhere and don't need this - only this field is modeled as a plain `u16` seconds count.
+/// RouterOS reads the keepalive back with a unit (`25s`).
 fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
     get(row, key)
         .map(|v| {
@@ -79,9 +64,11 @@ fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>
         .transpose()
 }
 
-/// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
-/// never `tls_insecure()`. `rustls::ClientConfig::builder()` takes the process-default crypto
-/// provider, which `run` installs once at startup.
+fn yes_no(on: bool) -> String {
+    if on { "yes" } else { "no" }.to_owned()
+}
+
+/// Verified against the host's CA store, never `tls_insecure()`.
 pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice> {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
@@ -134,344 +121,281 @@ async fn print(device: &MikrotikDevice, path: &str) -> anyhow::Result<Vec<Row>> 
     .await
 }
 
-fn with_attributes(mut b: CommandBuilder<Cmd>, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
-    for (k, v) in attrs {
-        b = b.attribute(k, Some(v));
+pub(crate) trait Table {
+    type Desired: Clone + Debug;
+    const PATH: &'static str;
+    const NAME: &'static str;
+    fn add_attributes(desired: &Self::Desired) -> Attributes;
+    fn set_attributes(desired: &Self::Desired) -> Attributes {
+        Self::add_attributes(desired)
+    }
+}
+
+pub(crate) trait Keyed: Table + Sized {
+    type Current: HasId + Debug;
+    fn parse(row: &Row) -> anyhow::Result<Self::Current>;
+    fn is_ours(current: &Self::Current, ours: &[String]) -> bool;
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired>;
+    fn commands(_current: &[Self::Current], plan: &Plan<Self::Desired>) -> Vec<Command> {
+        commands::<Self>(plan)
+    }
+}
+
+pub(crate) trait Singleton: Table<Desired: PartialEq> {
+    fn parse(row: &Row) -> Self::Desired;
+}
+
+pub(crate) enum Command {
+    Remove(String),
+    Add(Attributes),
+    Set(String, Attributes),
+    Unset(String, &'static str),
+}
+
+impl Command {
+    fn build(&self, path: &str) -> CommandBuilder<Cmd> {
+        let command = |verb: &str| CommandBuilder::new().command(&format!("{path}/{verb}"));
+        match self {
+            Self::Remove(id) => command("remove").attribute(".id", Some(id)),
+            Self::Add(attributes) => with_attributes(command("add"), attributes),
+            Self::Set(id, attributes) => {
+                with_attributes(command("set").attribute(".id", Some(id)), attributes)
+            }
+            // RouterOS addresses the row as `numbers` here, not `.id` as `set` does.
+            Self::Unset(id, property) => command("unset")
+                .attribute("numbers", Some(id))
+                .attribute("value-name", Some(property)),
+        }
+    }
+}
+
+fn with_attributes(mut b: CommandBuilder<Cmd>, attributes: &Attributes) -> CommandBuilder<Cmd> {
+    for (key, value) in attributes {
+        b = b.attribute(key, Some(value));
     }
     b
 }
 
-fn add_command(path: &str, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
-    with_attributes(CommandBuilder::new().command(&format!("{path}/add")), attrs)
-}
-
-fn set_command(path: &str, id: &str, attrs: &[(&str, &str)]) -> CommandBuilder<Cmd> {
-    with_attributes(
-        CommandBuilder::new()
-            .command(&format!("{path}/set"))
-            .attribute(".id", Some(id)),
-        attrs,
-    )
-}
-
-/// `unset` returns a property to its default; RouterOS addresses the row as `numbers` here, not
-/// `.id` as `set` does.
-fn unset_command(path: &str, id: &str, property: &str) -> CommandBuilder<Cmd> {
-    CommandBuilder::new()
-        .command(&format!("{path}/unset"))
-        .attribute("numbers", Some(id))
-        .attribute("value-name", Some(property))
-}
-
-async fn add(
-    device: &MikrotikDevice,
-    path: &str,
-    attrs: &[(&str, &str)],
-) -> anyhow::Result<String> {
-    let rows = execute(device, add_command(path, attrs)).await?;
-    // `/add` typically replies with a single row carrying the new object's `.id` (`=ret=*1`) - not
-    // load-bearing for callers here (every apply_* re-reads on the next run), so a missing id in
-    // the reply is tolerated rather than treated as a hard error.
-    Ok(rows
-        .first()
-        .and_then(|r| get(r, "ret"))
-        .unwrap_or_default()
-        .to_string())
-}
-
-async fn set(
-    device: &MikrotikDevice,
-    path: &str,
-    id: &str,
-    attrs: &[(&str, &str)],
-) -> anyhow::Result<()> {
-    execute(device, set_command(path, id, attrs)).await?;
-    Ok(())
-}
-
-async fn remove(device: &MikrotikDevice, path: &str, id: &str) -> anyhow::Result<()> {
-    execute(
-        device,
-        CommandBuilder::new()
-            .command(&format!("{path}/remove"))
-            .attribute(".id", Some(id)),
-    )
-    .await?;
-    Ok(())
-}
-
-// ── interface wireguard ──
-
-const WIREGUARD_PATH: &str = "/interface/wireguard";
-
-fn parse_wireguard_interface(row: &Row) -> anyhow::Result<CurrentWireguardInterface> {
-    let id = get_id(row)?;
-    Ok(CurrentWireguardInterface {
-        name: get_required(row, "name", &id)?.to_string(),
-        listen_port: get_required(row, "listen-port", &id)?
-            .parse()
-            .map_err(|e| anyhow::anyhow!("listen-port is not a u16: {e}"))?,
-        private_key_b64: get(row, "private-key").unwrap_or_default().into(),
-        disabled: get_bool_flag(row, "disabled"),
-        mtu: get(row, "mtu")
-            .map(|mtu| mtu.parse())
-            .transpose()
-            .map_err(|e| anyhow::anyhow!("mtu is not a number: {e}"))?,
-        id,
-    })
-}
-
-pub async fn read_wireguard_interfaces(
-    device: &MikrotikDevice,
-) -> anyhow::Result<Vec<CurrentWireguardInterface>> {
-    print(device, WIREGUARD_PATH)
-        .await?
+/// Removals first: RouterOS refuses a renamed interface's port ("Listen port already used")
+/// and a re-prefixed address ("failure: already have such address") while the old row is there.
+pub(crate) fn commands<T: Table>(plan: &Plan<T::Desired>) -> Vec<Command> {
+    let removals = plan.remove.iter().map(|id| Command::Remove(id.clone()));
+    let adds = plan.add.iter().map(|d| Command::Add(T::add_attributes(d)));
+    let updates = plan
+        .update
         .iter()
-        .map(parse_wireguard_interface)
-        .collect()
+        .map(|(id, d)| Command::Set(id.clone(), T::set_attributes(d)));
+    removals.chain(adds).chain(updates).collect()
 }
 
-/// Removals happen **before** adds - a renamed interface (same UDP `listen-port`, new name, e.g.
-/// after the network's `mesh.interface_prefix` changed) is a
-/// remove+add pair, not an update (the diff key is `name`). Adding the new one first, while the
-/// old one still holds the port, makes RouterOS refuse the bind and auto-disable the new interface
-/// with a "Listen port already used" comment. Removing first frees the port before anything
-/// tries to claim it again.
-pub async fn apply_wireguard_interfaces(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredWireguardInterface>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, WIREGUARD_PATH, id).await?;
-    }
-    for d in &plan.add {
-        let (port, mtu) = (d.listen_port.to_string(), d.mtu.map(|m| m.to_string()));
-        let mut attributes = vec![
-            ("name", d.name.as_str()),
-            ("listen-port", port.as_str()),
-            ("private-key", d.private_key_b64.expose()),
-            ("disabled", if d.disabled { "yes" } else { "no" }),
-        ];
-        attributes.extend(mtu.as_deref().map(|mtu| ("mtu", mtu)));
-        add(device, WIREGUARD_PATH, &attributes).await?;
-    }
-    for (id, d) in &plan.update {
-        let (port, mtu) = (d.listen_port.to_string(), d.mtu.map(|m| m.to_string()));
-        let mut attributes = vec![
-            ("listen-port", port.as_str()),
-            ("private-key", d.private_key_b64.expose()),
-            ("disabled", if d.disabled { "yes" } else { "no" }),
-        ];
-        attributes.extend(mtu.as_deref().map(|mtu| ("mtu", mtu)));
-        set(device, WIREGUARD_PATH, id, &attributes).await?;
+pub async fn send(device: &MikrotikDevice, path: &str, commands: &[Command]) -> anyhow::Result<()> {
+    for command in commands {
+        execute(device, command.build(path)).await?;
     }
     Ok(())
 }
 
-// ── interface wireguard peers ──
-
-const WIREGUARD_PEERS_PATH: &str = "/interface/wireguard/peers";
-
-fn parse_wireguard_peer(row: &Row) -> anyhow::Result<CurrentWireguardPeer> {
-    let id = get_id(row)?;
-    Ok(CurrentWireguardPeer {
-        interface: get_required(row, "interface", &id)?.to_string(),
-        // See the module doc comment: RouterOS's own peer table has no `name` property - `comment`
-        // is used here to carry the peer's name.
-        name: get(row, "comment").unwrap_or_default().to_string(),
-        public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
-        allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
-        endpoint_address: get(row, "endpoint-address").map(str::to_string),
-        // A cleared port reads back as `0`, see `peer_port_and_keepalive`.
-        endpoint_port: get_opt_u16(row, "endpoint-port")?.filter(|&p| p != 0),
-        // A keepalive that sends none reads back as `0`, as one never set does.
-        persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?
-            .filter(|&seconds| seconds != 0),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-pub async fn read_wireguard_peers(
-    device: &MikrotikDevice,
-) -> anyhow::Result<Vec<CurrentWireguardPeer>> {
-    print(device, WIREGUARD_PEERS_PATH)
-        .await?
-        .iter()
-        .map(parse_wireguard_peer)
-        .collect()
-}
-
-/// Peers have no `unset`, so an absent port or keepalive is written as `0`, RouterOS's default;
-/// an empty value is refused for both.
-fn peer_port_and_keepalive(d: &DesiredWireguardPeer) -> [String; 2] {
-    [
-        d.endpoint_port.unwrap_or(0).to_string(),
-        d.persistent_keepalive.unwrap_or(0).to_string(),
-    ]
-}
-
-fn wireguard_peer_attrs<'a>(
-    d: &'a DesiredWireguardPeer,
-    [port, keepalive]: &'a [String; 2],
-) -> Vec<(&'a str, &'a str)> {
-    vec![
-        ("interface", d.interface.as_str()),
-        ("comment", d.name.as_str()),
-        ("public-key", d.public_key_b64.as_str()),
-        ("allowed-address", d.allowed_address.as_str()),
-        // An empty value clears an endpoint the device still holds; omitting it would keep that.
-        (
-            "endpoint-address",
-            d.endpoint_address.as_deref().unwrap_or_default(),
-        ),
-        ("endpoint-port", port),
-        ("persistent-keepalive", keepalive),
-        ("disabled", if d.disabled { "yes" } else { "no" }),
-    ]
-}
-
-/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for the general
-/// reason (a value-level change is a remove+add pair, not an update, and adding before removing
-/// risks RouterOS rejecting the add as a duplicate of the not-yet-removed old row). Not
-/// independently confirmed to fail the same way for peers specifically (only `ipv6 address` was
-/// caught live), but a WireGuard peer's identity is its public key, which - like an IP address -
-/// plausibly has its own device-wide uniqueness constraint, so the same defensive ordering applies
-/// here too.
-pub async fn apply_wireguard_peers(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredWireguardPeer>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, WIREGUARD_PEERS_PATH, id).await?;
-    }
-    for d in &plan.add {
-        let numbers = peer_port_and_keepalive(d);
-        add(
-            device,
-            WIREGUARD_PEERS_PATH,
-            &wireguard_peer_attrs(d, &numbers),
-        )
-        .await?;
-    }
-    for (id, d) in &plan.update {
-        let numbers = peer_port_and_keepalive(d);
-        set(
-            device,
-            WIREGUARD_PEERS_PATH,
-            id,
-            &wireguard_peer_attrs(d, &numbers),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-// ── ip address ──
-
-const IP_ADDRESS_PATH: &str = "/ip/address";
-
-fn parse_ip_address(row: &Row) -> anyhow::Result<CurrentIpAddress> {
-    let id = get_id(row)?;
-    Ok(CurrentIpAddress {
-        address: get_required(row, "address", &id)?.to_string(),
-        interface: get_required(row, "interface", &id)?.to_string(),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-/// Reads every `ip address` row, pre-filtered to this tool's own footprint (`ours`, the interfaces
-/// it creates and the loopback bridge) - see `diff::ip_addresses`'s doc comment on why an
-/// unfiltered read must never reach that function.
-pub async fn read_ip_addresses(
+pub async fn read<T: Keyed>(
     device: &MikrotikDevice,
     ours: &[String],
-) -> anyhow::Result<Vec<CurrentIpAddress>> {
-    our_ip_addresses(&print(device, IP_ADDRESS_PATH).await?, ours)
+) -> anyhow::Result<Vec<T::Current>> {
+    footprint::<T>(&print(device, T::PATH).await?, ours)
 }
 
-/// The rows `keep` takes; one that does not parse is kept, to be refused.
-fn footprint<T>(
+/// A row that does not parse is kept, to be refused.
+pub(crate) fn footprint<T: Keyed>(
     rows: &[Row],
-    parse: impl Fn(&Row) -> anyhow::Result<T>,
-    keep: impl Fn(&T) -> bool,
-) -> anyhow::Result<Vec<T>> {
+    ours: &[String],
+) -> anyhow::Result<Vec<T::Current>> {
     rows.iter()
-        .map(parse)
-        .filter(|row| row.as_ref().map_or(true, &keep))
+        .map(T::parse)
+        .filter(|row| row.as_ref().map_or(true, |c| T::is_ours(c, ours)))
         .collect()
 }
 
-pub(crate) fn our_ip_addresses(
-    rows: &[Row],
-    ours: &[String],
-) -> anyhow::Result<Vec<CurrentIpAddress>> {
-    footprint(rows, parse_ip_address, |a| {
-        crate::diff::is_ours(&a.interface, ours)
-    })
-}
-
-/// Removals happen **before** adds - a value-level change on the same (interface, address) key
-/// isn't an in-place update (the diff key includes `address` itself, so a changed address is a
-/// remove+add pair, not an update) - see `apply_ipv6_addresses`'s doc comment for the exact
-/// failure this ordering avoids.
-pub async fn apply_ip_addresses(
+pub async fn read_singleton<T: Singleton>(
     device: &MikrotikDevice,
-    plan: &Plan<DesiredIpAddress>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, IP_ADDRESS_PATH, id).await?;
-    }
-    for d in &plan.add {
-        add(
-            device,
-            IP_ADDRESS_PATH,
-            &[
-                ("address", d.address.as_str()),
-                ("interface", d.interface.as_str()),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await?;
-    }
-    for (id, d) in &plan.update {
-        set(
-            device,
-            IP_ADDRESS_PATH,
-            id,
-            &[("disabled", if d.disabled { "yes" } else { "no" })],
-        )
-        .await?;
-    }
-    Ok(())
+    name: &str,
+) -> anyhow::Result<Option<(String, T::Desired)>> {
+    let rows = print(device, T::PATH).await?;
+    Ok(by_name(&rows, name)?.map(|(id, row)| (id, T::parse(row))))
 }
 
-/// This device's own directly-connected subnets (every `ip address` row except an orphaned raw id
-/// and the loopback bridge itself), normalized to network base - the BGP-announced prefix set is
-/// computed fresh from this on every run, never configured. Candidates for
-/// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
-/// actually gets announced - this function is a dumb reader, filtering nothing but our own
-/// infrastructure's dead weight (the address of a link's interface is a legitimate candidate, since
-/// `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
+fn by_name<'r>(rows: &'r [Row], name: &str) -> anyhow::Result<Option<(String, &'r Row)>> {
+    for row in rows {
+        let id = get_id(row)?;
+        if get(row, "name") == Some(name) {
+            return Ok(Some((id, row)));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) struct WireguardInterfaces;
+
+impl Table for WireguardInterfaces {
+    type Desired = DesiredWireguardInterface;
+    const PATH: &'static str = "/interface/wireguard";
+    const NAME: &'static str = "interface wireguard";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![("name", d.name.clone())];
+        attributes.extend(Self::set_attributes(d));
+        attributes
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![
+            ("listen-port", d.listen_port.to_string()),
+            ("private-key", d.private_key_b64.expose().to_owned()),
+            ("disabled", yes_no(d.disabled)),
+        ];
+        attributes.extend(d.mtu.map(|mtu| ("mtu", mtu.to_string())));
+        attributes
+    }
+}
+
+impl Keyed for WireguardInterfaces {
+    type Current = CurrentWireguardInterface;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentWireguardInterface {
+            name: get_required(row, "name", &id)?.to_string(),
+            listen_port: get_required(row, "listen-port", &id)?
+                .parse()
+                .map_err(|e| anyhow::anyhow!("listen-port is not a u16: {e}"))?,
+            private_key_b64: get(row, "private-key").unwrap_or_default().into(),
+            disabled: get_bool_flag(row, "disabled"),
+            mtu: get(row, "mtu")
+                .map(|mtu| mtu.parse())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("mtu is not a number: {e}"))?,
+            id,
+        })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::wireguard_interfaces(current, desired)
+    }
+}
+
+pub(crate) struct WireguardPeers;
+
+impl Table for WireguardPeers {
+    type Desired = DesiredWireguardPeer;
+    const PATH: &'static str = "/interface/wireguard/peers";
+    const NAME: &'static str = "interface wireguard peers";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("interface", d.interface.clone()),
+            ("comment", d.name.clone()),
+            ("public-key", d.public_key_b64.clone()),
+            ("allowed-address", d.allowed_address.clone()),
+            // An empty value clears an endpoint the device holds; omitting it would keep it.
+            (
+                "endpoint-address",
+                d.endpoint_address.clone().unwrap_or_default(),
+            ),
+            // Peers have no `unset`; RouterOS's default is `0`, and it refuses an empty value.
+            ("endpoint-port", d.endpoint_port.unwrap_or(0).to_string()),
+            (
+                "persistent-keepalive",
+                d.persistent_keepalive.unwrap_or(0).to_string(),
+            ),
+            ("disabled", yes_no(d.disabled)),
+        ]
+    }
+}
+
+impl Keyed for WireguardPeers {
+    type Current = CurrentWireguardPeer;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentWireguardPeer {
+            interface: get_required(row, "interface", &id)?.to_string(),
+            // RouterOS peers have no `name`; the label is kept in `comment`.
+            name: get(row, "comment").unwrap_or_default().to_string(),
+            public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
+            allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
+            endpoint_address: get(row, "endpoint-address").map(str::to_string),
+            // RouterOS reads a cleared port, and a keepalive never set, back as `0`.
+            endpoint_port: get_opt_u16(row, "endpoint-port")?.filter(|&p| p != 0),
+            persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?
+                .filter(|&seconds| seconds != 0),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::wireguard_peers(current, desired)
+    }
+}
+
+pub(crate) struct IpAddresses;
+
+impl Table for IpAddresses {
+    type Desired = DesiredIpAddress;
+    const PATH: &'static str = "/ip/address";
+    const NAME: &'static str = "ip address";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("address", d.address.clone()),
+            ("interface", d.interface.clone()),
+            ("disabled", yes_no(d.disabled)),
+        ]
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![("disabled", yes_no(d.disabled))]
+    }
+}
+
+impl Keyed for IpAddresses {
+    type Current = CurrentIpAddress;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentIpAddress {
+            address: get_required(row, "address", &id)?.to_string(),
+            interface: get_required(row, "interface", &id)?.to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    fn is_ours(a: &Self::Current, ours: &[String]) -> bool {
+        diff::is_ours(&a.interface, ours)
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::ip_addresses(current, desired)
+    }
+}
+
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
 ) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
-    physically_connected(&print(device, IP_ADDRESS_PATH).await?)
+    physically_connected(&print(device, IpAddresses::PATH).await?)
 }
 
-/// The physically-connected subnets the `ip address` rows give, each by its interface.
 fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
     let mut prefixes = Vec::new();
     for row in rows {
-        let a = parse_ip_address(row)?;
-        // Unlike read_ip_addresses's footprint check, the links' interfaces are **not** excluded
-        // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
-        // address meant to be announced when the node's `direct_interfaces` hold the links'
-        // pattern - config::desired_state's own direct_interfaces/learn matching is what actually
-        // decides whether any given prefix gets announced, this is just the candidate list. Only a
-        // raw internal id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge
-        // itself are excluded - neither is ever announce-worthy.
+        let a = IpAddresses::parse(row)?;
+        // Every address is a candidate but an orphaned raw id's and the loopback's.
         if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == ROUTER_LOOPBACK {
             continue;
         }
@@ -485,707 +409,447 @@ fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> 
     Ok(prefixes)
 }
 
-/// Normalizes a host address-with-prefix (as configured on an interface, e.g. `"203.0.113.1/27"`)
-/// to its containing network base (`"203.0.113.0/27"`) - `ip address` rows carry the host
-/// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<Ipv4Net> {
     Ok(sliplib_net::parse_ipv4(address)?.trunc())
 }
 
-// ── interface list member ──
+pub(crate) struct ListMembers;
 
-const LIST_MEMBER_PATH: &str = "/interface/list/member";
+impl Table for ListMembers {
+    type Desired = DesiredListMember;
+    const PATH: &'static str = "/interface/list/member";
+    const NAME: &'static str = "interface list member";
 
-fn parse_list_member(row: &Row) -> anyhow::Result<CurrentListMember> {
-    let id = get_id(row)?;
-    Ok(CurrentListMember {
-        list: get_required(row, "list", &id)?.to_string(),
-        interface: get_required(row, "interface", &id)?.to_string(),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-/// Every `interface list member` row of the `LAN` list on one of `ours`, the interfaces this tool
-/// creates - see `diff::is_ours` and `diff::list_members`'s doc comment.
-pub async fn read_list_members(
-    device: &MikrotikDevice,
-    ours: &[String],
-) -> anyhow::Result<Vec<CurrentListMember>> {
-    our_list_members(&print(device, LIST_MEMBER_PATH).await?, ours)
-}
-
-pub(crate) fn our_list_members(
-    rows: &[Row],
-    ours: &[String],
-) -> anyhow::Result<Vec<CurrentListMember>> {
-    footprint(rows, parse_list_member, |m| {
-        m.list == crate::config::LAN_LIST && crate::diff::is_ours(&m.interface, ours)
-    })
-}
-
-pub async fn apply_list_members(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredListMember>,
-) -> anyhow::Result<()> {
-    for d in &plan.add {
-        add(
-            device,
-            LIST_MEMBER_PATH,
-            &[
-                ("list", d.list.as_str()),
-                ("interface", d.interface.as_str()),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await?;
-    }
-    for (id, d) in &plan.update {
-        set(
-            device,
-            LIST_MEMBER_PATH,
-            id,
-            &[("disabled", if d.disabled { "yes" } else { "no" })],
-        )
-        .await?;
-    }
-    for id in &plan.remove {
-        remove(device, LIST_MEMBER_PATH, id).await?;
-    }
-    Ok(())
-}
-
-// ── interface bridge (loopback, singleton) ──
-
-const BRIDGE_PATH: &str = "/interface/bridge";
-
-pub async fn read_loopback_bridge(
-    device: &MikrotikDevice,
-    name: &str,
-) -> anyhow::Result<Option<(String, DesiredBridge)>> {
-    let rows = print(device, BRIDGE_PATH).await?;
-    for row in &rows {
-        let id = get_id(row)?;
-        if get(row, "name") == Some(name) {
-            return Ok(Some((
-                id,
-                DesiredBridge {
-                    name: name.to_string(),
-                    disabled: get_bool_flag(row, "disabled"),
-                },
-            )));
-        }
-    }
-    Ok(None)
-}
-
-pub async fn apply_loopback_bridge(
-    device: &MikrotikDevice,
-    op: crate::diff::SingletonOp<DesiredBridge>,
-) -> anyhow::Result<()> {
-    use crate::diff::SingletonOp;
-    match op {
-        SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => add(
-            device,
-            BRIDGE_PATH,
-            &[
-                ("name", d.name.as_str()),
-                ("protocol-mode", "none"),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await
-        .map(|_| ()),
-        SingletonOp::Update(id, d) => {
-            set(
-                device,
-                BRIDGE_PATH,
-                &id,
-                &[("disabled", if d.disabled { "yes" } else { "no" })],
-            )
-            .await
-        }
-    }
-}
-
-// ── ipv6 address ──
-
-const IPV6_ADDRESS_PATH: &str = "/ipv6/address";
-
-fn parse_ipv6_address(row: &Row) -> anyhow::Result<CurrentIpv6Address> {
-    let id = get_id(row)?;
-    Ok(CurrentIpv6Address {
-        address: get_required(row, "address", &id)?.to_string(),
-        interface: get_required(row, "interface", &id)?.to_string(),
-        // Assumed boolean-flag-shaped exactly like `disabled` (explicit "true"/"false" on read,
-        // "yes"/"no" accepted on write) - not confirmed on a device.
-        advertise: get_bool_flag(row, "advertise"),
-        auto_link_local: get_bool_flag(row, "auto-link-local"),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-/// Reads every `ipv6 address` row, pre-filtered to this tool's own footprint (`diff::is_ours`) -
-/// see `diff::ipv6_addresses`'s doc comment on why an unfiltered read must never reach that
-/// function.
-///
-/// Link-local (`fe80::/10`) rows are **not** specially excluded here - both `router-lo` and
-/// the links' interfaces are in scope, so any auto-generated link-local RouterOS puts on one of
-/// them ends up "in footprint but not desired" and gets cleaned up like any other stale row. This
-/// matters for two different reasons per interface type:
-/// - the links' interfaces (WireGuard): RouterOS's own auto-generation is broken - once a second
-///   mesh link exists, every one of them gets the *identical* link-local, and RouterOS's own
-///   duplicate address detection marks every one past the first `invalid`, breaking OSPFv3
-///   adjacency on all of them. `config::desired_state` applies the address explicitly
-///   (from `awg.interfaces[].addresses`), with
-///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it -
-///   see `config::own_ipv6_address`.
-/// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a real
-///   MAC), but once `routing ospf instance`'s `redistribute=connected` is set (see
-///   `apply_ospf_instance`), RouterOS redistributes *every* connected IPv6 route on that interface
-///   into OSPF - a link-local prefix has no business being treated as a globally routable
-///   destination, so nothing should be left there to redistribute by accident.
-pub async fn read_ipv6_addresses(
-    device: &MikrotikDevice,
-    ours: &[String],
-) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    our_ipv6_addresses(&print(device, IPV6_ADDRESS_PATH).await?, ours)
-}
-
-fn our_ipv6_addresses(rows: &[Row], ours: &[String]) -> anyhow::Result<Vec<CurrentIpv6Address>> {
-    footprint(rows, parse_ipv6_address, |a| {
-        crate::diff::is_ours(&a.interface, ours)
-    })
-}
-
-/// Removals happen **before** adds. `diff::ipv6_addresses` keys on `(interface, address)`, so a
-/// desired address value changing on an interface that already has *some* address (e.g. a
-/// `addressing.tunnel`-driven `/128` -> `/64` prefix-length change on the same base address) is a
-/// remove+add pair, not an in-place update - if the add ran first, RouterOS rejects it outright
-/// ("failure: already have such address") because the old, still-present entry shares the same
-/// base address, aborting the whole run with *nothing* converged: an `fe80::ff/64` add fails
-/// while an earlier run's `fe80::ff/128` is still present on another interface.
-pub async fn apply_ipv6_addresses(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredIpv6Address>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, IPV6_ADDRESS_PATH, id).await?;
-    }
-    for d in &plan.add {
-        let mut attrs = vec![
-            ("address", d.address.as_str()),
-            ("interface", d.interface.as_str()),
-        ];
-        attrs.extend(ipv6_address_settings(d));
-        add(device, IPV6_ADDRESS_PATH, &attrs).await?;
-    }
-    for (id, d) in &plan.update {
-        set(device, IPV6_ADDRESS_PATH, id, &ipv6_address_settings(d)).await?;
-    }
-    Ok(())
-}
-
-/// `auto-link-local` is sent only when set: RouterOS rejects it on an address that is not
-/// link-local, whatever the value.
-fn ipv6_address_settings(d: &DesiredIpv6Address) -> Vec<(&'static str, &'static str)> {
-    let yes_no = |on: bool| if on { "yes" } else { "no" };
-    let mut attrs = vec![("advertise", yes_no(d.advertise))];
-    if let Some(auto_link_local) = d.auto_link_local {
-        attrs.push(("auto-link-local", yes_no(auto_link_local)));
-    }
-    attrs.push(("disabled", yes_no(d.disabled)));
-    attrs
-}
-
-// ── routing ospf instance (singleton) ──
-
-const OSPF_INSTANCE_PATH: &str = "/routing/ospf/instance";
-
-pub async fn read_ospf_instance(
-    device: &MikrotikDevice,
-    name: &str,
-) -> anyhow::Result<Option<(String, DesiredOspfInstance)>> {
-    let rows = print(device, OSPF_INSTANCE_PATH).await?;
-    for row in &rows {
-        let id = get_id(row)?;
-        if get(row, "name") == Some(name) {
-            return Ok(Some((
-                id,
-                DesiredOspfInstance {
-                    name: name.to_string(),
-                    version: get(row, "version").unwrap_or("3").parse().unwrap_or(3),
-                    router_id: get(row, "router-id")
-                        .unwrap_or_default()
-                        .parse()
-                        .unwrap_or(Ipv4Addr::UNSPECIFIED),
-                    redistribute_connected: get(row, "redistribute")
-                        .is_some_and(|v| v.split(',').any(|s| s == "connected")),
-                    disabled: get_bool_flag(row, "disabled"),
-                },
-            )));
-        }
-    }
-    Ok(None)
-}
-
-/// `Update` now also sets `version` (not just `router-id`), attempting an in-place `2 -> 3`
-/// transition for a device migrating from the pre-OSPFv3 scheme. Whether RouterOS allows
-/// changing an OSPF instance's `version` after creation is not verified - if it rejects this, the
-/// pre-existing OSPFv2 instance needs a one-time manual
-/// `/routing ospf instance remove [find name=default-v2]` during the migration window. This table
-/// is a name-owned singleton by design, not something to build automatic detection for.
-pub async fn apply_ospf_instance(
-    device: &MikrotikDevice,
-    op: crate::diff::SingletonOp<DesiredOspfInstance>,
-) -> anyhow::Result<()> {
-    use crate::diff::SingletonOp;
-    match op {
-        SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => add(
-            device,
-            OSPF_INSTANCE_PATH,
-            &[
-                ("name", d.name.as_str()),
-                ("version", &d.version.to_string()),
-                ("router-id", &d.router_id.to_string()),
-                (
-                    "redistribute",
-                    if d.redistribute_connected {
-                        "connected"
-                    } else {
-                        ""
-                    },
-                ),
-            ],
-        )
-        .await
-        .map(|_| ()),
-        SingletonOp::Update(id, d) => {
-            set(
-                device,
-                OSPF_INSTANCE_PATH,
-                &id,
-                &[
-                    ("version", &d.version.to_string()),
-                    ("router-id", &d.router_id.to_string()),
-                    (
-                        "redistribute",
-                        if d.redistribute_connected {
-                            "connected"
-                        } else {
-                            ""
-                        },
-                    ),
-                ],
-            )
-            .await
-        }
-    }
-}
-
-// ── routing ospf area (singleton) ──
-
-const OSPF_AREA_PATH: &str = "/routing/ospf/area";
-
-pub async fn read_ospf_area(
-    device: &MikrotikDevice,
-    name: &str,
-) -> anyhow::Result<Option<(String, DesiredOspfArea)>> {
-    let rows = print(device, OSPF_AREA_PATH).await?;
-    for row in &rows {
-        let id = get_id(row)?;
-        if get(row, "name") == Some(name) {
-            return Ok(Some((
-                id,
-                DesiredOspfArea {
-                    name: name.to_string(),
-                    area_id: get(row, "area-id").unwrap_or_default().to_string(),
-                    instance: get(row, "instance").unwrap_or_default().to_string(),
-                    disabled: get_bool_flag(row, "disabled"),
-                },
-            )));
-        }
-    }
-    Ok(None)
-}
-
-pub async fn apply_ospf_area(
-    device: &MikrotikDevice,
-    op: crate::diff::SingletonOp<DesiredOspfArea>,
-) -> anyhow::Result<()> {
-    use crate::diff::SingletonOp;
-    match op {
-        SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => add(
-            device,
-            OSPF_AREA_PATH,
-            &[
-                ("name", d.name.as_str()),
-                ("area-id", d.area_id.as_str()),
-                ("instance", d.instance.as_str()),
-            ],
-        )
-        .await
-        .map(|_| ()),
-        SingletonOp::Update(id, d) => {
-            set(
-                device,
-                OSPF_AREA_PATH,
-                &id,
-                &[("instance", d.instance.as_str())],
-            )
-            .await
-        }
-    }
-}
-
-// ── routing bfd configuration ──
-
-const BFD_CONFIG_PATH: &str = "/routing/bfd/configuration";
-
-fn parse_bfd_configuration(row: &Row) -> anyhow::Result<CurrentBfdConfiguration> {
-    let id = get_id(row)?;
-    Ok(CurrentBfdConfiguration {
-        interfaces: get_required(row, "interfaces", &id)?.to_string(),
-        min_rx: get(row, "min-rx").map(str::to_string),
-        min_tx: get(row, "min-tx").map(str::to_string),
-        multiplier: get_opt_u16(row, "multiplier")?,
-        id,
-    })
-}
-
-pub async fn read_bfd_configurations(
-    device: &MikrotikDevice,
-) -> anyhow::Result<Vec<CurrentBfdConfiguration>> {
-    let rows = print(device, BFD_CONFIG_PATH).await?;
-    rows.iter().map(parse_bfd_configuration).collect()
-}
-
-/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
-pub async fn apply_bfd_configurations(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredBfdConfiguration>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, BFD_CONFIG_PATH, id).await?;
-    }
-    for d in &plan.add {
-        let multiplier = d.multiplier.to_string();
-        add(
-            device,
-            BFD_CONFIG_PATH,
-            &[
-                ("interfaces", d.interfaces.as_str()),
-                ("min-rx", d.min_rx.as_str()),
-                ("min-tx", d.min_tx.as_str()),
-                ("multiplier", multiplier.as_str()),
-            ],
-        )
-        .await?;
-    }
-    for (id, d) in &plan.update {
-        let multiplier = d.multiplier.to_string();
-        set(
-            device,
-            BFD_CONFIG_PATH,
-            id,
-            &[
-                ("interfaces", d.interfaces.as_str()),
-                ("min-rx", d.min_rx.as_str()),
-                ("min-tx", d.min_tx.as_str()),
-                ("multiplier", multiplier.as_str()),
-            ],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-// ── routing ospf interface-template ──
-
-const OSPF_TEMPLATE_PATH: &str = "/routing/ospf/interface-template";
-
-fn parse_ospf_template(row: &Row) -> anyhow::Result<CurrentOspfInterfaceTemplate> {
-    let id = get_id(row)?;
-    Ok(CurrentOspfInterfaceTemplate {
-        interfaces: get_required(row, "interfaces", &id)?.to_string(),
-        area: get(row, "area").unwrap_or_default().to_string(),
-        type_: get(row, "type").map(str::to_string),
-        cost: get_opt_u16(row, "cost")?,
-        hello_interval: get(row, "hello-interval").map(str::to_string),
-        dead_interval: get(row, "dead-interval").map(str::to_string),
-        passive_raw: get_flag_presence(row, "passive"),
-        use_bfd: get_bool_flag(row, "use-bfd"),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-pub async fn read_ospf_interface_templates(
-    device: &MikrotikDevice,
-) -> anyhow::Result<Vec<CurrentOspfInterfaceTemplate>> {
-    let rows = print(device, OSPF_TEMPLATE_PATH).await?;
-    rows.iter().map(parse_ospf_template).collect()
-}
-
-fn ospf_template_attrs(d: &DesiredOspfInterfaceTemplate) -> Vec<(&str, &str)> {
-    let mut a = vec![
-        ("interfaces", d.interfaces.as_str()),
-        ("area", d.area.as_str()),
-    ];
-    if let Some(t) = &d.type_ {
-        a.push(("type", t.as_str()));
-    }
-    if let Some(h) = &d.hello_interval {
-        a.push(("hello-interval", h.as_str()));
-    }
-    if let Some(dead) = &d.dead_interval {
-        a.push(("dead-interval", dead.as_str()));
-    }
-    if d.passive {
-        a.push(("passive", ""));
-    }
-    a.push(("use-bfd", if d.use_bfd { "yes" } else { "no" }));
-    a.push(("disabled", if d.disabled { "yes" } else { "no" }));
-    a
-}
-
-/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
-/// `unset_passive` names the updated rows whose `passive` flag has to go, see
-/// `diff::passive_to_unset`.
-pub async fn apply_ospf_interface_templates(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredOspfInterfaceTemplate>,
-    unset_passive: &[String],
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, OSPF_TEMPLATE_PATH, id).await?;
-    }
-    for d in &plan.add {
-        let mut a = ospf_template_attrs(d);
-        let cost_s;
-        if let Some(c) = d.cost {
-            cost_s = c.to_string();
-            a.push(("cost", &cost_s));
-        }
-        add(device, OSPF_TEMPLATE_PATH, &a).await?;
-    }
-    for (id, d) in &plan.update {
-        let mut a = ospf_template_attrs(d);
-        let cost_s;
-        if let Some(c) = d.cost {
-            cost_s = c.to_string();
-            a.push(("cost", &cost_s));
-        }
-        set(device, OSPF_TEMPLATE_PATH, id, &a).await?;
-    }
-    for id in unset_passive {
-        execute(device, unset_command(OSPF_TEMPLATE_PATH, id, "passive")).await?;
-    }
-    Ok(())
-}
-
-// ── ip firewall address-list (bgp-networks) ──
-
-const ADDRESS_LIST_PATH: &str = "/ip/firewall/address-list";
-
-fn parse_address_list_entry(row: &Row) -> anyhow::Result<CurrentAddressListEntry> {
-    let id = get_id(row)?;
-    Ok(CurrentAddressListEntry {
-        list: get_required(row, "list", &id)?.to_string(),
-        address: get_required(row, "address", &id)?.to_string(),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-pub async fn read_bgp_networks(
-    device: &MikrotikDevice,
-    list: &str,
-) -> anyhow::Result<Vec<CurrentAddressListEntry>> {
-    let rows = print(device, ADDRESS_LIST_PATH).await?;
-    rows.iter()
-        .map(parse_address_list_entry)
-        .filter(|r| matches!(r, Ok(e) if e.list == list) || r.is_err())
-        .collect()
-}
-
-/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
-pub async fn apply_bgp_networks(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredAddressListEntry>,
-) -> anyhow::Result<()> {
-    for id in &plan.remove {
-        remove(device, ADDRESS_LIST_PATH, id).await?;
-    }
-    for d in &plan.add {
-        add(
-            device,
-            ADDRESS_LIST_PATH,
-            &[
-                ("list", d.list.as_str()),
-                ("address", d.address.as_str()),
-                ("disabled", if d.disabled { "yes" } else { "no" }),
-            ],
-        )
-        .await?;
-    }
-    for (id, d) in &plan.update {
-        set(
-            device,
-            ADDRESS_LIST_PATH,
-            id,
-            &[("disabled", if d.disabled { "yes" } else { "no" })],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-// ── routing bgp instance (singleton) ──
-
-const BGP_INSTANCE_PATH: &str = "/routing/bgp/instance";
-
-pub async fn read_bgp_instance(
-    device: &MikrotikDevice,
-    name: &str,
-) -> anyhow::Result<Option<(String, crate::diff::DesiredBgpInstance)>> {
-    let rows = print(device, BGP_INSTANCE_PATH).await?;
-    for row in &rows {
-        let id = get_id(row)?;
-        if get(row, "name") == Some(name) {
-            return Ok(Some((
-                id,
-                crate::diff::DesiredBgpInstance {
-                    name: name.to_string(),
-                    as_number: get(row, "as").unwrap_or("0").parse().unwrap_or(0),
-                    router_id: get(row, "router-id")
-                        .unwrap_or_default()
-                        .parse()
-                        .unwrap_or(Ipv4Addr::UNSPECIFIED),
-                    routing_table: get(row, "routing-table").unwrap_or_default().to_string(),
-                    disabled: get_bool_flag(row, "disabled"),
-                },
-            )));
-        }
-    }
-    Ok(None)
-}
-
-pub async fn apply_bgp_instance(
-    device: &MikrotikDevice,
-    op: crate::diff::SingletonOp<crate::diff::DesiredBgpInstance>,
-) -> anyhow::Result<()> {
-    use crate::diff::SingletonOp;
-    match op {
-        SingletonOp::NoOp => Ok(()),
-        SingletonOp::Create(d) => add(
-            device,
-            BGP_INSTANCE_PATH,
-            &[
-                ("name", d.name.as_str()),
-                ("as", &d.as_number.to_string()),
-                ("router-id", &d.router_id.to_string()),
-                ("routing-table", d.routing_table.as_str()),
-            ],
-        )
-        .await
-        .map(|_| ()),
-        SingletonOp::Update(id, d) => {
-            set(
-                device,
-                BGP_INSTANCE_PATH,
-                &id,
-                &[
-                    ("as", &d.as_number.to_string()),
-                    ("router-id", &d.router_id.to_string()),
-                ],
-            )
-            .await
-        }
-    }
-}
-
-// ── routing bgp connection ──
-
-const BGP_CONNECTION_PATH: &str = "/routing/bgp/connection";
-
-fn parse_bgp_connection(row: &Row) -> anyhow::Result<CurrentBgpConnection> {
-    let id = get_id(row)?;
-    Ok(CurrentBgpConnection {
-        name: get_required(row, "name", &id)?.to_string(),
-        instance: get(row, "instance").unwrap_or_default().to_string(),
-        local_address: get(row, "local.address")
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or(Ipv6Addr::UNSPECIFIED),
-        local_role: get(row, "local.role").unwrap_or_default().to_string(),
-        remote_address: get(row, "remote.address")
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or(Ipv6Addr::UNSPECIFIED),
-        // `multihop`/`afi` are top-level connection properties, not under
-        // `local.`/`remote.`/`output.` - not confirmed on a device.
-        multihop: get_bool_flag(row, "multihop"),
-        afi: get(row, "afi").unwrap_or_default().to_string(),
-        output_network: get(row, "output.network").unwrap_or_default().to_string(),
-        disabled: get_bool_flag(row, "disabled"),
-        id,
-    })
-}
-
-pub async fn read_bgp_connections(
-    device: &MikrotikDevice,
-) -> anyhow::Result<Vec<CurrentBgpConnection>> {
-    print(device, BGP_CONNECTION_PATH)
-        .await?
-        .iter()
-        .map(parse_bgp_connection)
-        .collect()
-}
-
-/// Removals happen **before** adds - see `apply_ipv6_addresses`'s doc comment for why.
-pub async fn apply_bgp_connections(
-    device: &MikrotikDevice,
-    plan: &Plan<DesiredBgpConnection>,
-) -> anyhow::Result<()> {
-    fn attrs(d: &DesiredBgpConnection) -> Vec<(&str, &str)> {
+    fn add_attributes(d: &Self::Desired) -> Attributes {
         vec![
-            ("name", d.name.as_str()),
-            ("instance", d.instance.as_str()),
-            ("local.role", d.local_role.as_str()),
-            ("multihop", if d.multihop { "yes" } else { "no" }),
-            ("afi", d.afi.as_str()),
-            ("output.network", d.output_network.as_str()),
-            ("disabled", if d.disabled { "yes" } else { "no" }),
+            ("list", d.list.clone()),
+            ("interface", d.interface.clone()),
+            ("disabled", yes_no(d.disabled)),
         ]
     }
-    for id in &plan.remove {
-        remove(device, BGP_CONNECTION_PATH, id).await?;
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![("disabled", yes_no(d.disabled))]
     }
-    for d in &plan.add {
-        let mut a = attrs(d);
-        let local_s = d.local_address.to_string();
-        let remote_s = d.remote_address.to_string();
-        a.push(("local.address", &local_s));
-        a.push(("remote.address", &remote_s));
-        add(device, BGP_CONNECTION_PATH, &a).await?;
+}
+
+impl Keyed for ListMembers {
+    type Current = CurrentListMember;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentListMember {
+            list: get_required(row, "list", &id)?.to_string(),
+            interface: get_required(row, "interface", &id)?.to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
     }
-    for (id, d) in &plan.update {
-        // Full attrs(), not just the address pair: `multihop`/`afi` are now also part of the diff
-        // comparison (see diff::bgp_connections) and must actually be pushed on a real drift, not
-        // silently left stale.
-        let mut a = attrs(d);
-        let local_s = d.local_address.to_string();
-        let remote_s = d.remote_address.to_string();
-        a.push(("local.address", &local_s));
-        a.push(("remote.address", &remote_s));
-        set(device, BGP_CONNECTION_PATH, id, &a).await?;
+
+    fn is_ours(m: &Self::Current, ours: &[String]) -> bool {
+        m.list == crate::config::LAN_LIST && diff::is_ours(&m.interface, ours)
     }
-    Ok(())
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::list_members(current, desired)
+    }
+}
+
+pub(crate) struct LoopbackBridge;
+
+impl Table for LoopbackBridge {
+    type Desired = DesiredBridge;
+    const PATH: &'static str = "/interface/bridge";
+    const NAME: &'static str = "interface bridge";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("name", d.name.clone()),
+            ("protocol-mode", "none".to_owned()),
+            ("disabled", yes_no(d.disabled)),
+        ]
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![("disabled", yes_no(d.disabled))]
+    }
+}
+
+impl Singleton for LoopbackBridge {
+    fn parse(row: &Row) -> Self::Desired {
+        DesiredBridge {
+            name: get(row, "name").unwrap_or_default().to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+        }
+    }
+}
+
+pub(crate) struct Ipv6Addresses;
+
+impl Table for Ipv6Addresses {
+    type Desired = DesiredIpv6Address;
+    const PATH: &'static str = "/ipv6/address";
+    const NAME: &'static str = "ipv6 address";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![
+            ("address", d.address.clone()),
+            ("interface", d.interface.clone()),
+        ];
+        attributes.extend(Self::set_attributes(d));
+        attributes
+    }
+
+    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the value.
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![("advertise", yes_no(d.advertise))];
+        if let Some(auto_link_local) = d.auto_link_local {
+            attributes.push(("auto-link-local", yes_no(auto_link_local)));
+        }
+        attributes.push(("disabled", yes_no(d.disabled)));
+        attributes
+    }
+}
+
+impl Keyed for Ipv6Addresses {
+    type Current = CurrentIpv6Address;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentIpv6Address {
+            address: get_required(row, "address", &id)?.to_string(),
+            interface: get_required(row, "interface", &id)?.to_string(),
+            // Not confirmed on a device.
+            advertise: get_bool_flag(row, "advertise"),
+            auto_link_local: get_bool_flag(row, "auto-link-local"),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    /// RouterOS gives every link the same generated link-local, and its DAD marks all but one
+    /// invalid; the loopback's would be redistributed into OSPF. So no generated one is kept.
+    fn is_ours(a: &Self::Current, ours: &[String]) -> bool {
+        diff::is_ours(&a.interface, ours)
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::ipv6_addresses(current, desired)
+    }
+}
+
+pub(crate) struct OspfInstance;
+
+impl Table for OspfInstance {
+    type Desired = DesiredOspfInstance;
+    const PATH: &'static str = "/routing/ospf/instance";
+    const NAME: &'static str = "routing ospf instance";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![("name", d.name.clone())];
+        attributes.extend(Self::set_attributes(d));
+        attributes
+    }
+
+    /// `set` sends `version`, which RouterOS may refuse to change; the old instance is then removed
+    /// by hand (`/routing ospf instance remove [find name=default-v2]`).
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        let redistribute = if d.redistribute_connected {
+            "connected"
+        } else {
+            ""
+        };
+        vec![
+            ("version", d.version.to_string()),
+            ("router-id", d.router_id.to_string()),
+            ("redistribute", redistribute.to_owned()),
+        ]
+    }
+}
+
+impl Singleton for OspfInstance {
+    fn parse(row: &Row) -> Self::Desired {
+        DesiredOspfInstance {
+            name: get(row, "name").unwrap_or_default().to_string(),
+            version: get(row, "version").unwrap_or("3").parse().unwrap_or(3),
+            router_id: get(row, "router-id")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(Ipv4Addr::UNSPECIFIED),
+            redistribute_connected: get(row, "redistribute")
+                .is_some_and(|v| v.split(',').any(|s| s == "connected")),
+            disabled: get_bool_flag(row, "disabled"),
+        }
+    }
+}
+
+pub(crate) struct OspfArea;
+
+impl Table for OspfArea {
+    type Desired = DesiredOspfArea;
+    const PATH: &'static str = "/routing/ospf/area";
+    const NAME: &'static str = "routing ospf area";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("name", d.name.clone()),
+            ("area-id", d.area_id.clone()),
+            ("instance", d.instance.clone()),
+        ]
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![("instance", d.instance.clone())]
+    }
+}
+
+impl Singleton for OspfArea {
+    fn parse(row: &Row) -> Self::Desired {
+        DesiredOspfArea {
+            name: get(row, "name").unwrap_or_default().to_string(),
+            area_id: get(row, "area-id").unwrap_or_default().to_string(),
+            instance: get(row, "instance").unwrap_or_default().to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+        }
+    }
+}
+
+pub(crate) struct BfdConfigurations;
+
+impl Table for BfdConfigurations {
+    type Desired = DesiredBfdConfiguration;
+    const PATH: &'static str = "/routing/bfd/configuration";
+    const NAME: &'static str = "routing bfd configuration";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("interfaces", d.interfaces.clone()),
+            ("min-rx", d.min_rx.clone()),
+            ("min-tx", d.min_tx.clone()),
+            ("multiplier", d.multiplier.to_string()),
+        ]
+    }
+}
+
+impl Keyed for BfdConfigurations {
+    type Current = CurrentBfdConfiguration;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentBfdConfiguration {
+            interfaces: get_required(row, "interfaces", &id)?.to_string(),
+            min_rx: get(row, "min-rx").map(str::to_string),
+            min_tx: get(row, "min-tx").map(str::to_string),
+            multiplier: get_opt_u16(row, "multiplier")?,
+            id,
+        })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::bfd_configurations(current, desired)
+    }
+}
+
+pub(crate) struct OspfInterfaceTemplates;
+
+impl Table for OspfInterfaceTemplates {
+    type Desired = DesiredOspfInterfaceTemplate;
+    const PATH: &'static str = "/routing/ospf/interface-template";
+    const NAME: &'static str = "routing ospf interface-template";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        let mut attributes = vec![
+            ("interfaces", d.interfaces.clone()),
+            ("area", d.area.clone()),
+        ];
+        attributes.extend(d.type_.clone().map(|t| ("type", t)));
+        attributes.extend(d.hello_interval.clone().map(|h| ("hello-interval", h)));
+        attributes.extend(d.dead_interval.clone().map(|dead| ("dead-interval", dead)));
+        if d.passive {
+            attributes.push(("passive", String::new()));
+        }
+        attributes.push(("use-bfd", yes_no(d.use_bfd)));
+        attributes.push(("disabled", yes_no(d.disabled)));
+        attributes.extend(d.cost.map(|c| ("cost", c.to_string())));
+        attributes
+    }
+}
+
+impl Keyed for OspfInterfaceTemplates {
+    type Current = CurrentOspfInterfaceTemplate;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentOspfInterfaceTemplate {
+            interfaces: get_required(row, "interfaces", &id)?.to_string(),
+            area: get(row, "area").unwrap_or_default().to_string(),
+            type_: get(row, "type").map(str::to_string),
+            cost: get_opt_u16(row, "cost")?,
+            hello_interval: get(row, "hello-interval").map(str::to_string),
+            dead_interval: get(row, "dead-interval").map(str::to_string),
+            passive_raw: get_flag_presence(row, "passive"),
+            use_bfd: get_bool_flag(row, "use-bfd"),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::ospf_interface_templates(current, desired)
+    }
+
+    fn commands(current: &[Self::Current], plan: &Plan<Self::Desired>) -> Vec<Command> {
+        let unsets = diff::passive_to_unset(current, plan)
+            .into_iter()
+            .map(|id| Command::Unset(id, "passive"));
+        commands::<Self>(plan).into_iter().chain(unsets).collect()
+    }
+}
+
+pub(crate) struct BgpNetworks;
+
+impl Table for BgpNetworks {
+    type Desired = DesiredAddressListEntry;
+    const PATH: &'static str = "/ip/firewall/address-list";
+    const NAME: &'static str = "ip firewall address-list";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("list", d.list.clone()),
+            ("address", d.address.clone()),
+            ("disabled", yes_no(d.disabled)),
+        ]
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![("disabled", yes_no(d.disabled))]
+    }
+}
+
+impl Keyed for BgpNetworks {
+    type Current = CurrentAddressListEntry;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentAddressListEntry {
+            list: get_required(row, "list", &id)?.to_string(),
+            address: get_required(row, "address", &id)?.to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    fn is_ours(e: &Self::Current, _ours: &[String]) -> bool {
+        e.list == crate::config::BGP_NETWORKS_LIST
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::bgp_networks(current, desired)
+    }
+}
+
+pub(crate) struct BgpInstance;
+
+impl Table for BgpInstance {
+    type Desired = DesiredBgpInstance;
+    const PATH: &'static str = "/routing/bgp/instance";
+    const NAME: &'static str = "routing bgp instance";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("name", d.name.clone()),
+            ("as", d.as_number.to_string()),
+            ("router-id", d.router_id.to_string()),
+            ("routing-table", d.routing_table.clone()),
+        ]
+    }
+
+    fn set_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("as", d.as_number.to_string()),
+            ("router-id", d.router_id.to_string()),
+        ]
+    }
+}
+
+impl Singleton for BgpInstance {
+    fn parse(row: &Row) -> Self::Desired {
+        DesiredBgpInstance {
+            name: get(row, "name").unwrap_or_default().to_string(),
+            as_number: get(row, "as").unwrap_or("0").parse().unwrap_or(0),
+            router_id: get(row, "router-id")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(Ipv4Addr::UNSPECIFIED),
+            routing_table: get(row, "routing-table").unwrap_or_default().to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+        }
+    }
+}
+
+pub(crate) struct BgpConnections;
+
+impl Table for BgpConnections {
+    type Desired = DesiredBgpConnection;
+    const PATH: &'static str = "/routing/bgp/connection";
+    const NAME: &'static str = "routing bgp connection";
+
+    fn add_attributes(d: &Self::Desired) -> Attributes {
+        vec![
+            ("name", d.name.clone()),
+            ("instance", d.instance.clone()),
+            ("local.role", d.local_role.clone()),
+            ("multihop", yes_no(d.multihop)),
+            ("afi", d.afi.clone()),
+            ("output.network", d.output_network.clone()),
+            ("disabled", yes_no(d.disabled)),
+            ("local.address", d.local_address.to_string()),
+            ("remote.address", d.remote_address.to_string()),
+        ]
+    }
+}
+
+impl Keyed for BgpConnections {
+    type Current = CurrentBgpConnection;
+
+    fn parse(row: &Row) -> anyhow::Result<Self::Current> {
+        let id = get_id(row)?;
+        Ok(CurrentBgpConnection {
+            name: get_required(row, "name", &id)?.to_string(),
+            instance: get(row, "instance").unwrap_or_default().to_string(),
+            local_address: get(row, "local.address")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(Ipv6Addr::UNSPECIFIED),
+            local_role: get(row, "local.role").unwrap_or_default().to_string(),
+            remote_address: get(row, "remote.address")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(Ipv6Addr::UNSPECIFIED),
+            // Top-level, not under `local.`/`remote.`/`output.`: not confirmed on a device.
+            multihop: get_bool_flag(row, "multihop"),
+            afi: get(row, "afi").unwrap_or_default().to_string(),
+            output_network: get(row, "output.network").unwrap_or_default().to_string(),
+            disabled: get_bool_flag(row, "disabled"),
+            id,
+        })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
+    fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
+        diff::bgp_connections(current, desired)
+    }
 }
 
 #[cfg(test)]
@@ -1220,7 +884,7 @@ mod tests {
             ("listen-port", "51820"),
             ("private-key", "abc="),
         ]);
-        let iface = parse_wireguard_interface(&r).unwrap();
+        let iface = WireguardInterfaces::parse(&r).unwrap();
         assert_eq!(iface.id, "*1");
         assert_eq!(iface.name, "mesh-east");
         assert_eq!(iface.listen_port, 51820);
@@ -1229,7 +893,7 @@ mod tests {
         assert_eq!(iface.mtu, None);
 
         r.insert("mtu".to_string(), Some("1420".to_string()));
-        assert_eq!(parse_wireguard_interface(&r).unwrap().mtu, Some(1420));
+        assert_eq!(WireguardInterfaces::parse(&r).unwrap().mtu, Some(1420));
     }
 
     #[test]
@@ -1241,7 +905,7 @@ mod tests {
             ("public-key", "pub="),
             ("allowed-address", "0.0.0.0/0,::/0"),
         ]);
-        let peer = parse_wireguard_peer(&r).unwrap();
+        let peer = WireguardPeers::parse(&r).unwrap();
         assert_eq!(peer.name, "east1");
     }
 
@@ -1252,11 +916,10 @@ mod tests {
             ("interfaces", "router-lo"),
             ("area", "backbone"),
         ]);
-        assert_eq!(parse_ospf_template(&r).unwrap().passive_raw, None);
+        assert_eq!(OspfInterfaceTemplates::parse(&r).unwrap().passive_raw, None);
 
-        // A real device sends a passive row as `=passive=`: the key with no value.
         r.insert("passive".to_string(), None);
-        let t = parse_ospf_template(&r).unwrap();
+        let t = OspfInterfaceTemplates::parse(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
     }
 
@@ -1272,10 +935,10 @@ mod tests {
 
     #[test]
     fn ipv6_address_settings_send_auto_link_local_only_when_set() {
-        let settings = ipv6_address_settings(&ipv6_address("3fff::1/128", None));
+        let settings = Ipv6Addresses::set_attributes(&ipv6_address("3fff::1/128", None));
         assert!(settings.iter().all(|(key, _)| *key != "auto-link-local"));
-        let settings = ipv6_address_settings(&ipv6_address("fe80::1/64", Some(false)));
-        assert!(settings.contains(&("auto-link-local", "no")));
+        let settings = Ipv6Addresses::set_attributes(&ipv6_address("fe80::1/64", Some(false)));
+        assert!(settings.contains(&("auto-link-local", "no".to_owned())));
     }
 
     #[test]
@@ -1286,7 +949,7 @@ mod tests {
             ("interface", "router-lo"),
             ("advertise", "false"),
         ]);
-        let a = parse_ipv6_address(&r).unwrap();
+        let a = Ipv6Addresses::parse(&r).unwrap();
         assert_eq!(a.address, "3fff::1/128");
         assert_eq!(a.interface, "router-lo");
         assert!(!a.advertise);
@@ -1305,14 +968,14 @@ mod tests {
             ("afi", "ip"),
             ("output.network", "bgp-networks"),
         ]);
-        let c = parse_bgp_connection(&r).unwrap();
+        let c = BgpConnections::parse(&r).unwrap();
         assert_eq!(c.local_address, "3fff::1".parse::<Ipv6Addr>().unwrap());
         assert_eq!(c.remote_address, "3fff::2".parse::<Ipv6Addr>().unwrap());
         assert!(c.multihop);
         assert_eq!(c.afi, "ip");
     }
 
-    /// Whether the encoded command carries `word` as one API word (one-byte length prefix).
+    /// One API word: a one-byte length, then the word.
     fn sends_word(cmd: CommandBuilder<Cmd>, word: &str) -> bool {
         let mut encoded = vec![u8::try_from(word.len()).unwrap()];
         encoded.extend_from_slice(word.as_bytes());
@@ -1324,23 +987,12 @@ mod tests {
 
     #[test]
     fn passive_ospf_template_sends_the_valueless_passive_word() {
-        let d = DesiredOspfInterfaceTemplate {
-            interfaces: "router-lo".to_string(),
-            use_bfd: false,
-            area: "backbone".to_string(),
-            type_: None,
-            cost: None,
-            hello_interval: None,
-            dead_interval: None,
-            passive: true,
-            disabled: false,
-        };
-        let a = ospf_template_attrs(&d);
-        assert!(sends_word(add_command(OSPF_TEMPLATE_PATH, &a), "=passive="));
-        assert!(sends_word(
-            set_command(OSPF_TEMPLATE_PATH, "*1", &a),
-            "=passive="
-        ));
+        let d = template("router-lo", true);
+        let path = OspfInterfaceTemplates::PATH;
+        let add = Command::Add(OspfInterfaceTemplates::add_attributes(&d));
+        assert!(sends_word(add.build(path), "=passive="));
+        let set = Command::Set("*1".to_owned(), OspfInterfaceTemplates::set_attributes(&d));
+        assert!(sends_word(set.build(path), "=passive="));
     }
 
     #[test]
@@ -1355,17 +1007,13 @@ mod tests {
             persistent_keepalive: None,
             disabled: false,
         };
-        let numbers = peer_port_and_keepalive(&d);
-        let a = wireguard_peer_attrs(&d, &numbers);
-        assert!(sends_word(
-            set_command(WIREGUARD_PEERS_PATH, "*1", &a),
-            "=endpoint-address="
-        ));
-        for word in ["=endpoint-port=0", "=persistent-keepalive=0"] {
-            assert!(
-                sends_word(set_command(WIREGUARD_PEERS_PATH, "*1", &a), word),
-                "{word}"
-            );
+        let set = Command::Set("*1".to_owned(), WireguardPeers::set_attributes(&d));
+        for word in [
+            "=endpoint-address=",
+            "=endpoint-port=0",
+            "=persistent-keepalive=0",
+        ] {
+            assert!(sends_word(set.build(WireguardPeers::PATH), word), "{word}");
         }
     }
 
@@ -1377,7 +1025,7 @@ mod tests {
             ("persistent-keepalive", "0s"),
         ] {
             let r = row(&[(".id", "*1"), ("interface", "mesh-a"), (key, written)]);
-            let peer = parse_wireguard_peer(&r).unwrap();
+            let peer = WireguardPeers::parse(&r).unwrap();
             assert_eq!(
                 (peer.endpoint_port, peer.persistent_keepalive),
                 (None, None),
@@ -1388,21 +1036,36 @@ mod tests {
 
     #[test]
     fn passive_is_cleared_by_unset_on_numbers() {
-        let cmd = unset_command(OSPF_TEMPLATE_PATH, "*1", "passive");
-        assert!(sends_word(
-            unset_command(OSPF_TEMPLATE_PATH, "*1", "passive"),
-            "/routing/ospf/interface-template/unset"
-        ));
-        assert!(sends_word(
-            unset_command(OSPF_TEMPLATE_PATH, "*1", "passive"),
-            "=numbers=*1"
-        ));
-        assert!(sends_word(cmd, "=value-name=passive"));
+        let unset = Command::Unset("*1".to_owned(), "passive");
+        for word in [
+            "/routing/ospf/interface-template/unset",
+            "=numbers=*1",
+            "=value-name=passive",
+        ] {
+            assert!(
+                sends_word(unset.build(OspfInterfaceTemplates::PATH), word),
+                "{word}"
+            );
+        }
     }
 
-    /// Rows on an interface `interface wireguard` holds, on one the tool asks for by name, on one
-    /// that is nobody's of ours, on one named like the links' interfaces and not among them, and
-    /// on the raw id a deleted interface leaves behind; each with `address`.
+    #[test]
+    fn an_ospf_instance_redistributes_connected_only_when_its_list_holds_it() {
+        for (redistribute, connected) in [("static,connected", true), ("static", false)] {
+            let r = row(&[
+                (".id", "*1"),
+                ("name", "default"),
+                ("redistribute", redistribute),
+            ]);
+            assert_eq!(
+                OspfInstance::parse(&r).redistribute_connected,
+                connected,
+                "{redistribute}"
+            );
+        }
+    }
+
+    /// Rows on interfaces ours, foreign, look-alike and orphaned, each with `address`.
     fn rows_on_interfaces(address: &str) -> Vec<Row> {
         ["wg-east", "router-lo", "ether1", "wg-west", "*16"]
             .iter()
@@ -1426,14 +1089,14 @@ mod tests {
 
     #[test]
     fn the_ip_addresses_read_are_those_on_this_tools_interfaces() {
-        let read = our_ip_addresses(&rows_on_interfaces("192.0.2.1/32"), &ours()).unwrap();
+        let read = footprint::<IpAddresses>(&rows_on_interfaces("192.0.2.1/32"), &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
 
     #[test]
     fn the_ipv6_addresses_read_are_those_on_this_tools_interfaces() {
-        let read = our_ipv6_addresses(&rows_on_interfaces("fe80::1/64"), &ours()).unwrap();
+        let read = footprint::<Ipv6Addresses>(&rows_on_interfaces("fe80::1/64"), &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|a| a.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
@@ -1447,7 +1110,7 @@ mod tests {
             ("interface", "wg-east"),
             ("list", "WAN"),
         ]));
-        let read = our_list_members(&rows, &ours()).unwrap();
+        let read = footprint::<ListMembers>(&rows, &ours()).unwrap();
         let interfaces: Vec<&str> = read.iter().map(|m| m.interface.as_str()).collect();
         assert_eq!(interfaces, OURS);
     }
@@ -1455,11 +1118,12 @@ mod tests {
     #[test]
     fn a_row_that_does_not_parse_is_an_error_and_not_passed_over() {
         let unparsed = vec![row(&[(".id", "*1")])];
-        assert!(our_ip_addresses(&unparsed, &[]).is_err());
-        assert!(our_ipv6_addresses(&unparsed, &[]).is_err());
-        assert!(our_list_members(&unparsed, &[]).is_err());
+        assert!(footprint::<IpAddresses>(&unparsed, &[]).is_err());
+        assert!(footprint::<Ipv6Addresses>(&unparsed, &[]).is_err());
+        assert!(footprint::<ListMembers>(&unparsed, &[]).is_err());
+        assert!(footprint::<BgpNetworks>(&unparsed, &[]).is_err());
         assert!(
-            parse_wireguard_interface(&row(&[(".id", "*1"), ("listen-port", "51820")])).is_err()
+            WireguardInterfaces::parse(&row(&[(".id", "*1"), ("listen-port", "51820")])).is_err()
         );
     }
 
@@ -1495,5 +1159,130 @@ mod tests {
             ]
         );
         assert!(physically_connected(&[row(&[(".id", "*1")])]).is_err());
+    }
+
+    fn kinds(commands: &[Command]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|command| match command {
+                Command::Remove(id) => format!("remove {id}"),
+                Command::Add(_) => "add".to_owned(),
+                Command::Set(id, _) => format!("set {id}"),
+                Command::Unset(id, property) => format!("unset {id} {property}"),
+            })
+            .collect()
+    }
+
+    fn ip_address(address: &str) -> DesiredIpAddress {
+        DesiredIpAddress {
+            address: address.to_owned(),
+            interface: "router-lo".to_owned(),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_plan_is_applied_as_its_removals_then_its_adds_then_its_updates() {
+        let plan = Plan {
+            add: vec![ip_address("192.0.2.1/32")],
+            update: vec![("*2".to_owned(), ip_address("192.0.2.2/32"))],
+            remove: vec!["*3".to_owned()],
+        };
+        assert_eq!(
+            kinds(&IpAddresses::commands(&[], &plan)),
+            ["remove *3", "add", "set *2"]
+        );
+    }
+
+    fn template(interfaces: &str, passive: bool) -> DesiredOspfInterfaceTemplate {
+        DesiredOspfInterfaceTemplate {
+            interfaces: interfaces.to_owned(),
+            use_bfd: false,
+            area: "backbone".to_owned(),
+            type_: None,
+            cost: None,
+            hello_interval: None,
+            dead_interval: None,
+            passive,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_templates_passive_is_unset_after_every_other_command() {
+        let mut current = OspfInterfaceTemplates::parse(&row(&[
+            (".id", "*1"),
+            ("interfaces", "router-lo"),
+            ("area", "backbone"),
+        ]))
+        .unwrap();
+        current.passive_raw = Some(String::new());
+        let plan = Plan {
+            add: vec![template("wg-east", false)],
+            update: vec![("*1".to_owned(), template("router-lo", false))],
+            remove: vec!["*4".to_owned()],
+        };
+        assert_eq!(
+            kinds(&OspfInterfaceTemplates::commands(&[current], &plan)),
+            ["remove *4", "add", "set *1", "unset *1 passive"]
+        );
+    }
+
+    #[test]
+    fn the_bgp_networks_read_are_those_of_their_own_list() {
+        let rows: Vec<Row> = [
+            crate::config::BGP_NETWORKS_LIST,
+            "other",
+            crate::config::BGP_NETWORKS_LIST,
+        ]
+        .iter()
+        .zip(1..)
+        .map(|(list, id)| {
+            row(&[
+                (".id", &format!("*{id}")),
+                ("list", list),
+                ("address", "192.0.2.0/24"),
+            ])
+        })
+        .collect();
+        let read = footprint::<BgpNetworks>(&rows, &[]).unwrap();
+        let ids: Vec<&str> = read.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["*1", "*3"]);
+    }
+
+    #[test]
+    fn every_row_of_a_table_only_this_tool_writes_is_read() {
+        fn read_whole<T: Keyed>(fields: &[(&str, &str)]) -> bool {
+            let mut on_ether = vec![(".id", "*1")];
+            on_ether.extend_from_slice(fields);
+            footprint::<T>(&[row(&on_ether)], &[]).unwrap().len() == 1
+        }
+        assert!(read_whole::<WireguardInterfaces>(&[
+            ("name", "ether1"),
+            ("listen-port", "51820")
+        ]));
+        assert!(read_whole::<WireguardPeers>(&[("interface", "ether1")]));
+        assert!(read_whole::<BfdConfigurations>(&[("interfaces", "ether1")]));
+        assert!(read_whole::<OspfInterfaceTemplates>(&[(
+            "interfaces",
+            "ether1"
+        )]));
+        assert!(read_whole::<BgpConnections>(&[("name", "ether1")]));
+    }
+
+    #[test]
+    fn a_singleton_is_the_row_of_its_name_and_every_row_before_it_has_an_id() {
+        let rows = [
+            row(&[(".id", "*1"), ("name", "other")]),
+            row(&[(".id", "*2"), ("name", "router-lo")]),
+        ];
+        let (id, found) = by_name(&rows, "router-lo").unwrap().unwrap();
+        assert_eq!((id.as_str(), get(found, "name")), ("*2", Some("router-lo")));
+        assert!(by_name(&rows, "absent").unwrap().is_none());
+        let before_without_id = [
+            row(&[("name", "other")]),
+            row(&[(".id", "*2"), ("name", "router-lo")]),
+        ];
+        assert!(by_name(&before_without_id, "router-lo").is_err());
     }
 }

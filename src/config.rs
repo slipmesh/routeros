@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 pub const LAN_LIST: &str = "LAN";
 /// Version-neutral name (was `"default-v2"` under OSPFv2) - the `version` field alone now
-/// distinguishes the instance; see `mikrotik.rs::apply_ospf_instance`'s doc comment on the
+/// distinguishes the instance; see `mikrotik::OspfInstance`'s doc comment on the
 /// in-place `2 -> 3` transition this rename anticipates.
 pub const OSPF_INSTANCE: &str = "default";
 pub const OSPF_AREA: &str = "backbone";

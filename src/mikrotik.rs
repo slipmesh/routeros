@@ -157,14 +157,12 @@ pub(crate) trait Table {
 }
 
 /// A table whose rows the diff matches by key.
-pub(crate) trait Keyed: Table {
+pub(crate) trait Keyed: Table + Sized {
     type Current: HasId + Debug;
     fn parse(row: &Row) -> anyhow::Result<Self::Current>;
-    /// Whether a row is this tool's, given its interfaces in `ours`. Every row is, unless the
-    /// table has other writers: `diff` removes every row it is handed that is not desired.
-    fn is_ours(_current: &Self::Current, _ours: &[String]) -> bool {
-        true
-    }
+    /// Whether a row is this tool's, given its interfaces in `ours`: `diff` removes every row it
+    /// is handed that is not desired. In a table only this tool writes, every row is.
+    fn is_ours(current: &Self::Current, ours: &[String]) -> bool;
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired>;
     fn commands(_current: &[Self::Current], plan: &Plan<Self::Desired>) -> Vec<Command> {
         commands::<Self>(plan)
@@ -210,9 +208,10 @@ fn with_attributes(mut b: CommandBuilder<Cmd>, attributes: &Attributes) -> Comma
 }
 
 /// The commands that apply `plan`: its removals, then its adds, then its updates.
-/// - RouterOS refuses a renamed interface's port while the old interface holds it.
-/// - It refuses an address whose prefix length changes while the old one is there.
-pub(crate) fn commands<T: Table + ?Sized>(plan: &Plan<T::Desired>) -> Vec<Command> {
+/// - A renamed interface's new port is taken while the old one holds it: "Listen port already
+///   used", and the new interface is disabled.
+/// - An address whose prefix length changes: "failure: already have such address".
+pub(crate) fn commands<T: Table>(plan: &Plan<T::Desired>) -> Vec<Command> {
     let removals = plan.remove.iter().map(|id| Command::Remove(id.clone()));
     let adds = plan.add.iter().map(|d| Command::Add(T::add_attributes(d)));
     let updates = plan
@@ -311,6 +310,10 @@ impl Keyed for WireguardInterfaces {
         })
     }
 
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
         diff::wireguard_interfaces(current, desired)
     }
@@ -367,6 +370,10 @@ impl Keyed for WireguardPeers {
             disabled: get_bool_flag(row, "disabled"),
             id,
         })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
     }
 
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
@@ -435,13 +442,11 @@ fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> 
     let mut prefixes = Vec::new();
     for row in rows {
         let a = IpAddresses::parse(row)?;
-        // Unlike `IpAddresses::is_ours`, the links' interfaces are **not** excluded
-        // here: `addressing.tunnel.ipv4` (see config.rs) can give one a real, non-link-local
-        // address meant to be announced when the node's `direct_interfaces` hold the links'
-        // pattern - config::desired_state's own direct_interfaces/learn matching is what actually
-        // decides whether any given prefix gets announced, this is just the candidate list. Only a
-        // raw internal id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge
-        // itself are excluded - neither is ever announce-worthy.
+        // Every interface is a candidate, a foreign one too, and the links' interfaces among
+        // them: `addressing.tunnel.ipv4` (see config.rs) can give one a real address to announce,
+        // and config::desired_state's direct_interfaces/learn matching decides what is. Only a raw
+        // id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge are left out -
+        // neither is ever announce-worthy.
         if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == ROUTER_LOOPBACK {
             continue;
         }
@@ -606,12 +611,6 @@ impl Keyed for Ipv6Addresses {
     }
 }
 
-/// `set` also sends `version`, attempting an in-place `2 -> 3` transition for a device migrating
-/// from the pre-OSPFv3 scheme. Whether RouterOS allows changing an OSPF instance's `version` after
-/// creation is not verified - if it rejects this, the pre-existing OSPFv2 instance needs a
-/// one-time manual `/routing ospf instance remove [find name=default-v2]` during the migration
-/// window. This table is a name-owned singleton by design, not something to build automatic
-/// detection for.
 pub(crate) struct OspfInstance;
 
 impl Table for OspfInstance {
@@ -625,6 +624,8 @@ impl Table for OspfInstance {
         attributes
     }
 
+    /// `set` sends `version`, which RouterOS may refuse to change; the old instance is then removed
+    /// by hand (`/routing ospf instance remove [find name=default-v2]`).
     fn set_attributes(d: &Self::Desired) -> Attributes {
         let redistribute = if d.redistribute_connected {
             "connected"
@@ -717,6 +718,10 @@ impl Keyed for BfdConfigurations {
         })
     }
 
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
+    }
+
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
         diff::bfd_configurations(current, desired)
     }
@@ -764,6 +769,10 @@ impl Keyed for OspfInterfaceTemplates {
             disabled: get_bool_flag(row, "disabled"),
             id,
         })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
     }
 
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
@@ -908,6 +917,10 @@ impl Keyed for BgpConnections {
             disabled: get_bool_flag(row, "disabled"),
             id,
         })
+    }
+
+    fn is_ours(_: &Self::Current, _: &[String]) -> bool {
+        true
     }
 
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired> {
@@ -1319,21 +1332,22 @@ mod tests {
 
     #[test]
     fn every_row_of_a_table_only_this_tool_writes_is_read() {
-        let rows: Vec<Row> = ["wg-east", "ether1"]
-            .iter()
-            .zip(1..)
-            .map(|(name, id)| {
-                row(&[
-                    (".id", &format!("*{id}")),
-                    ("name", name),
-                    ("listen-port", "51820"),
-                ])
-            })
-            .collect();
-        assert_eq!(
-            footprint::<WireguardInterfaces>(&rows, &[]).unwrap().len(),
-            2
-        );
+        fn read_whole<T: Keyed>(fields: &[(&str, &str)]) -> bool {
+            let mut on_ether = vec![(".id", "*1")];
+            on_ether.extend_from_slice(fields);
+            footprint::<T>(&[row(&on_ether)], &[]).unwrap().len() == 1
+        }
+        assert!(read_whole::<WireguardInterfaces>(&[
+            ("name", "ether1"),
+            ("listen-port", "51820")
+        ]));
+        assert!(read_whole::<WireguardPeers>(&[("interface", "ether1")]));
+        assert!(read_whole::<BfdConfigurations>(&[("interfaces", "ether1")]));
+        assert!(read_whole::<OspfInterfaceTemplates>(&[(
+            "interfaces",
+            "ether1"
+        )]));
+        assert!(read_whole::<BgpConnections>(&[("name", "ether1")]));
     }
 
     #[test]
@@ -1345,6 +1359,10 @@ mod tests {
         let (id, found) = by_name(&rows, "router-lo").unwrap().unwrap();
         assert_eq!((id.as_str(), get(found, "name")), ("*2", Some("router-lo")));
         assert!(by_name(&rows, "absent").unwrap().is_none());
-        assert!(by_name(&[row(&[("name", "router-lo")])], "router-lo").is_err());
+        let before_without_id = [
+            row(&[("name", "other")]),
+            row(&[(".id", "*2"), ("name", "router-lo")]),
+        ];
+        assert!(by_name(&before_without_id, "router-lo").is_err());
     }
 }

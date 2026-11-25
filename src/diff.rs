@@ -2,15 +2,9 @@
 //! (as parsed by `mikrotik.rs`) and the desired rows (as computed by
 //! `config::desired_state`), produce an add/update/remove [`Plan`].
 //!
-//! **Exclusive vs. shared tables**: the diff logic below is identical for both -
-//! the difference is entirely in what `current` the caller passes in. For an exclusive table
-//! (`interface wireguard[/peers]`, `routing ospf interface-template`, `routing bgp connection`),
-//! nothing else on the device ever writes it, so `current` is simply the whole table and "remove
-//! everything not desired" is always safe. For a shared table (`ip address`, `interface list
-//! member`, `ip firewall address-list`), `mikrotik`'s read must cut `current` down to only rows
-//! plausibly owned by this tool (`Keyed::is_ours`, matching interface/list naming) *before* calling
-//! into this module - `diff` itself has no way to tell the difference and must never be handed an
-//! unfiltered shared table.
+//! **Exclusive vs. shared tables**: the diff logic below is identical for both, and removes every
+//! row of `current` it does not want. A shared table's rows reach it only through
+//! `mikrotik::Keyed::is_ours`; `diff` itself cannot tell another writer's row from this tool's.
 
 use sliplib_secrets::wireguard::PrivateKey;
 use std::collections::HashMap;

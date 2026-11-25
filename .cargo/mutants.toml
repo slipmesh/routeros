@@ -1,10 +1,12 @@
 # Reading a table and sending its commands are a thin shim over the RouterOS API that only a live
 # device exercises (see `src/mikrotik.rs`): no unit test can tell a call to it from none. Which rows
 # a read keeps and which commands a plan becomes are decided apart from it, and tested.
-# What a table's `add` and `set` send is the same: only a device tells a right list from a wrong one.
+# The attribute lists below are the same kind of shim: only a device tells a right list from a
+# wrong one. The lists a test reaches are not excluded.
 # `converge`'s steps and `run` are the order the tables are read and written in, against the device.
 exclude_re = [
     "src/mikrotik.rs:.*replace (send|read|read_singleton|read_physically_connected_prefixes) -> ",
-    "src/mikrotik.rs:.*replace (<impl Table for \\w+>|Table)::(add|set)_attributes -> ",
+    "src/mikrotik.rs:.*replace <impl Table for (WireguardInterfaces|IpAddresses|ListMembers|LoopbackBridge|OspfInstance|OspfArea|BgpNetworks|BgpInstance)>::(add|set)_attributes -> ",
+    "src/mikrotik.rs:.*replace <impl Table for (Ipv6Addresses|BfdConfigurations|BgpConnections)>::add_attributes -> ",
     "src/converge.rs:.*replace (run|step|singleton_step|write) -> ",
 ]

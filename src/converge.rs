@@ -1,23 +1,4 @@
-//! Reads, diffs, and (unless `--check`) applies every RouterOS table of one run, in a fixed order.
-//! The steps are generic over the table; what decides is in `diff.rs` and `mikrotik.rs`.
-//!
-//! Order - dependency-correct, and remove-before-add within each table (`mikrotik::commands`):
-//! 1. `interface list member` stale removal (before any interface is deleted).
-//! 2. `interface wireguard` (exclusive).
-//! 3. `interface bridge` (loopback, singleton) - before its own address can be set.
-//! 4. `ip address` (the loopback `/32`, and a mesh interface's tunnel IPv4 when the config has one).
-//! 5. `ipv6 address` (loopback ULA `/128` and the link-locals - independent of step 4, order
-//!    between the two doesn't matter).
-//! 6. `interface wireguard peers` (exclusive).
-//! 7. `interface list member` add/update (after interfaces exist).
-//! 8. `routing ospf instance` (singleton).
-//! 9. `routing ospf area` (singleton).
-//! 10. `routing bfd configuration` (exclusive) - before the templates that ask OSPF to consult
-//!     it, since RouterOS forbids any session no entry here covers.
-//! 11. `routing ospf interface-template` (exclusive).
-//! 12. `ip firewall address-list` (`bgp-networks`).
-//! 13. `routing bgp instance` (singleton).
-//! 14. `routing bgp connection` (exclusive).
+//! Reads, diffs and, unless `--check`, writes every RouterOS table of a run, in dependency order.
 
 use crate::config::DesiredState;
 use crate::diff::{self, CurrentWireguardInterface, DesiredWireguardInterface, Plan};
@@ -33,13 +14,11 @@ pub struct ConvergeReport {
     pub added: usize,
     pub updated: usize,
     pub removed: usize,
-    /// One human-readable line per add/update/remove action, across every table - what `--diff`
-    /// prints. Populated identically whether or not `apply` actually ran (see [`run`]).
+    /// One line per add, update and remove: what `--diff` prints.
     pub diff_lines: Vec<String>,
 }
 
 impl ConvergeReport {
-    /// Counts the plan's adds and updates and records a line for each.
     fn record_changes<D: std::fmt::Debug>(&mut self, table: &str, plan: &Plan<D>) {
         self.added += plan.add.len();
         self.updated += plan.update.len();
@@ -51,11 +30,7 @@ impl ConvergeReport {
         }
     }
 
-    /// [`Self::record_changes`], then the removals. `current` is the same slice the caller just
-    /// diffed against - used to resolve a `Plan::remove` id back to the actual row being removed,
-    /// so `- table (*C)` in `--diff` output becomes `- table: CurrentWireguardInterface { name:
-    /// "mesh-node-g", ... }` instead of an opaque RouterOS internal id nobody can act on without a
-    /// separate device query.
+    /// `current` turns a removed id back into its row for `--diff`.
     fn record<C: crate::diff::HasId + std::fmt::Debug, D: std::fmt::Debug>(
         &mut self,
         table: &str,
@@ -89,8 +64,7 @@ fn only_add_update<D: Clone>(plan: &Plan<D>) -> Plan<D> {
     }
 }
 
-/// The interfaces of the links: those asked for, and those `interface wireguard` holds, which only
-/// this tool writes.
+/// Only this tool writes `interface wireguard`, so every interface it holds is ours.
 fn our_interfaces(
     asked: &[DesiredWireguardInterface],
     held: &[CurrentWireguardInterface],
@@ -125,7 +99,6 @@ async fn write<T: Keyed>(
     Ok(())
 }
 
-/// Reads, diffs, records and (if `apply`) writes one table, given the interfaces that are ours.
 async fn step<T: Keyed>(
     device: &MikrotikDevice,
     report: &mut ConvergeReport,
@@ -138,7 +111,6 @@ async fn step<T: Keyed>(
     write::<T>(device, &current, &plan, apply).await
 }
 
-/// The same for the one row of a singleton table called `name`.
 async fn singleton_step<T: Singleton>(
     device: &MikrotikDevice,
     report: &mut ConvergeReport,
@@ -155,10 +127,6 @@ async fn singleton_step<T: Singleton>(
     Ok(())
 }
 
-/// Reads, diffs, and (if `apply`) applies every RouterOS table in the order above. `apply =
-/// false` (i.e. `--check`) still performs every read/diff step - a real connection is required
-/// either way - it just sends no write. Returns a full report either way, so `--diff` prints the
-/// same thing whether or not `--check` is also set.
 pub async fn run(
     device: &MikrotikDevice,
     desired: &DesiredState,
@@ -166,25 +134,23 @@ pub async fn run(
 ) -> anyhow::Result<ConvergeReport> {
     let mut report = ConvergeReport::default();
 
-    // Read before step 1, so that the members of an interface step 2 deletes go in the same run.
+    // Read first, so that the members of an interface deleted below go in this run.
     let current_wg = mikrotik::read::<WireguardInterfaces>(device, &[]).await?;
     let ours = our_interfaces(&desired.wireguard_interfaces, &current_wg);
 
-    // 1. Pre-cleanup: stale `interface list member` rows, before any interface deletion.
+    // Members go before any interface is deleted.
     let current_members = mikrotik::read::<ListMembers>(device, &ours).await?;
     let members = plan_of::<ListMembers>(&mut report, &current_members, &desired.list_members);
     write::<ListMembers>(device, &current_members, &only_remove(&members), apply).await?;
 
-    // 2. interface wireguard (exclusive).
     let wg =
         plan_of::<WireguardInterfaces>(&mut report, &current_wg, &desired.wireguard_interfaces);
     write::<WireguardInterfaces>(device, &current_wg, &wg, apply).await?;
 
-    // 3. interface bridge (loopback, singleton) - before its own address can be set.
+    // The bridge goes before its own address.
     let bridge = &desired.loopback_bridge;
     singleton_step::<LoopbackBridge>(device, &mut report, &bridge.name, bridge, apply).await?;
 
-    // 4. ip address (the loopback /32, and the mesh interfaces' tunnel IPv4 if any).
     let mut our_ifaces = ours.clone();
     our_ifaces.push(bridge.name.clone());
     step::<IpAddresses>(
@@ -196,8 +162,6 @@ pub async fn run(
     )
     .await?;
 
-    // 5. ipv6 address (loopback ULA /128 and the link-locals of the loopback and the links'
-    // interfaces).
     step::<Ipv6Addresses>(
         device,
         &mut report,
@@ -207,33 +171,27 @@ pub async fn run(
     )
     .await?;
 
-    // 6. interface wireguard peers (exclusive).
     step::<WireguardPeers>(device, &mut report, &[], &desired.wireguard_peers, apply).await?;
 
-    // 7. interface list member add/update (after interfaces exist; remove already done in step 1).
+    // Members are added after the interfaces exist.
     write::<ListMembers>(device, &current_members, &only_add_update(&members), apply).await?;
 
-    // 8-9. routing ospf instance / ospf area (singletons).
     let instance = &desired.ospf_instance;
     singleton_step::<OspfInstance>(device, &mut report, &instance.name, instance, apply).await?;
     let area = &desired.ospf_area;
     singleton_step::<OspfArea>(device, &mut report, &area.name, area, apply).await?;
 
-    // 10. routing bfd configuration (exclusive) - before the templates that ask for it.
+    // BFD goes before the templates: RouterOS refuses a BFD session no entry covers.
     step::<BfdConfigurations>(device, &mut report, &[], &desired.bfd_configurations, apply).await?;
 
-    // 11. routing ospf interface-template (exclusive).
     let templates = &desired.ospf_interface_templates;
     step::<OspfInterfaceTemplates>(device, &mut report, &[], templates, apply).await?;
 
-    // 12. ip firewall address-list (bgp-networks).
     step::<BgpNetworks>(device, &mut report, &[], &desired.bgp_networks, apply).await?;
 
-    // 13. routing bgp instance (singleton).
     let bgp = &desired.bgp_instance;
     singleton_step::<BgpInstance>(device, &mut report, &bgp.name, bgp, apply).await?;
 
-    // 14. routing bgp connection (exclusive).
     step::<BgpConnections>(device, &mut report, &[], &desired.bgp_connections, apply).await?;
 
     Ok(report)

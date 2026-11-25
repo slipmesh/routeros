@@ -1,11 +1,4 @@
-//! Thin RouterOS device shim: TLS connection, reading a table, and sending the commands that write
-//! it. Each table states its path, how a row parses and what an `add` and a `set` send; `diff.rs`
-//! decides the plan, and [`commands`] turns it into the commands. The socket I/O is checked only
-//! against a live device.
-//!
-//! Attribute names are the ones the RouterOS API is called with here; the few not confirmed on a
-//! device say so where they are read or written. A WireGuard peer's label is kept in its
-//! `comment`.
+//! The RouterOS device shim: the connection, reading a table and sending its commands.
 
 use crate::credentials::RouterCredentials;
 use crate::diff::{
@@ -26,7 +19,6 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(crate) type Row = HashMap<String, Option<String>>;
 
-/// What one `add` or `set` sends, in the order sent.
 pub(crate) type Attributes = Vec<(&'static str, String)>;
 
 fn get<'a>(row: &'a Row, key: &str) -> Option<&'a str> {
@@ -47,15 +39,7 @@ fn get_bool_flag(row: &Row, key: &str) -> bool {
     crate::diff::passive_flag_is_true(get(row, key))
 }
 
-/// A presence-style RouterOS flag (e.g. `passive` on `routing ospf interface-template`) round-
-/// trips through the API as **key presence**, not a meaningful value - confirmed against a real
-/// device: a passive row has the `passive` key present (with an empty/`None` inner value), a
-/// non-passive row omits the key entirely (`row.get("passive")` and a plain `get()` can't tell
-/// "present with an empty value" apart from "absent", since both collapse to `None` - this checks
-/// `contains_key` instead). Normalizes to the `Some("")`/`None` shape [`crate::diff::
-/// passive_flag_is_true`] already expects. Unlike `passive`, `disabled` is *not* this style - it's
-/// always present with an explicit `"true"`/`"false"` string value, which [`get_bool_flag`]
-/// already handles correctly.
+/// A passive row has the key with no value; a plain row has no key.
 fn get_flag_presence(row: &Row, key: &str) -> Option<String> {
     row.contains_key(key).then(String::new)
 }
@@ -69,11 +53,7 @@ fn get_opt_u16(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
         .transpose()
 }
 
-/// RouterOS echoes `persistent-keepalive` back with a trailing time-unit suffix (e.g. `"25s"`),
-/// even though a bare integer (interpreted as seconds) is accepted when *setting* it - confirmed
-/// against a real device, this attribute's exact wire shape not having been independently
-/// verified before. `hello-interval`/`dead-interval` are stored as raw strings
-/// elsewhere and don't need this - only this field is modeled as a plain `u16` seconds count.
+/// RouterOS reads the keepalive back with a unit (`25s`).
 fn get_opt_keepalive_seconds(row: &Row, key: &str) -> anyhow::Result<Option<u16>> {
     get(row, key)
         .map(|v| {
@@ -88,9 +68,7 @@ fn yes_no(on: bool) -> String {
     if on { "yes" } else { "no" }.to_owned()
 }
 
-/// Establishes a TLS connection using the host's own trusted CA store (`rustls-native-certs`) -
-/// never `tls_insecure()`. `rustls::ClientConfig::builder()` takes the process-default crypto
-/// provider, which `run` installs once at startup.
+/// Verified against the host's CA store, never `tls_insecure()`.
 pub async fn connect(creds: &RouterCredentials) -> anyhow::Result<MikrotikDevice> {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
@@ -143,25 +121,19 @@ async fn print(device: &MikrotikDevice, path: &str) -> anyhow::Result<Vec<Row>> 
     .await
 }
 
-/// How one table is written.
 pub(crate) trait Table {
     type Desired: Clone + Debug;
     const PATH: &'static str;
-    /// What the report and `--diff` call the table.
     const NAME: &'static str;
     fn add_attributes(desired: &Self::Desired) -> Attributes;
-    /// A `set` sends what an `add` does, unless the table says otherwise.
     fn set_attributes(desired: &Self::Desired) -> Attributes {
         Self::add_attributes(desired)
     }
 }
 
-/// A table whose rows the diff matches by key.
 pub(crate) trait Keyed: Table + Sized {
     type Current: HasId + Debug;
     fn parse(row: &Row) -> anyhow::Result<Self::Current>;
-    /// Whether a row is this tool's, given its interfaces in `ours`: `diff` removes every row it
-    /// is handed that is not desired. In a table only this tool writes, every row is.
     fn is_ours(current: &Self::Current, ours: &[String]) -> bool;
     fn plan(current: &[Self::Current], desired: &[Self::Desired]) -> Plan<Self::Desired>;
     fn commands(_current: &[Self::Current], plan: &Plan<Self::Desired>) -> Vec<Command> {
@@ -169,17 +141,14 @@ pub(crate) trait Keyed: Table + Sized {
     }
 }
 
-/// A table this tool keeps one row of, found by its name.
 pub(crate) trait Singleton: Table<Desired: PartialEq> {
     fn parse(row: &Row) -> Self::Desired;
 }
 
-/// One write to a table.
 pub(crate) enum Command {
     Remove(String),
     Add(Attributes),
     Set(String, Attributes),
-    /// Returns a property to its default.
     Unset(String, &'static str),
 }
 
@@ -207,10 +176,8 @@ fn with_attributes(mut b: CommandBuilder<Cmd>, attributes: &Attributes) -> Comma
     b
 }
 
-/// The commands that apply `plan`: its removals, then its adds, then its updates.
-/// - A renamed interface's new port is taken while the old one holds it: "Listen port already
-///   used", and the new interface is disabled.
-/// - An address whose prefix length changes: "failure: already have such address".
+/// Removals first: RouterOS refuses a renamed interface's port ("Listen port already used")
+/// and a re-prefixed address ("failure: already have such address") while the old row is there.
 pub(crate) fn commands<T: Table>(plan: &Plan<T::Desired>) -> Vec<Command> {
     let removals = plan.remove.iter().map(|id| Command::Remove(id.clone()));
     let adds = plan.add.iter().map(|d| Command::Add(T::add_attributes(d)));
@@ -228,7 +195,6 @@ pub async fn send(device: &MikrotikDevice, path: &str, commands: &[Command]) -> 
     Ok(())
 }
 
-/// The rows of `T` that are ours, see [`Keyed::is_ours`].
 pub async fn read<T: Keyed>(
     device: &MikrotikDevice,
     ours: &[String],
@@ -236,7 +202,7 @@ pub async fn read<T: Keyed>(
     footprint::<T>(&print(device, T::PATH).await?, ours)
 }
 
-/// The rows that are ours; one that does not parse is kept, to be refused.
+/// A row that does not parse is kept, to be refused.
 pub(crate) fn footprint<T: Keyed>(
     rows: &[Row],
     ours: &[String],
@@ -255,7 +221,6 @@ pub async fn read_singleton<T: Singleton>(
     Ok(by_name(&rows, name)?.map(|(id, row)| (id, T::parse(row))))
 }
 
-/// The row called `name`, with its id; every row up to it must have one.
 fn by_name<'r>(rows: &'r [Row], name: &str) -> anyhow::Result<Option<(String, &'r Row)>> {
     for row in rows {
         let id = get_id(row)?;
@@ -332,13 +297,12 @@ impl Table for WireguardPeers {
             ("comment", d.name.clone()),
             ("public-key", d.public_key_b64.clone()),
             ("allowed-address", d.allowed_address.clone()),
-            // An empty value clears an endpoint the device still holds; omitting it would keep that.
+            // An empty value clears an endpoint the device holds; omitting it would keep it.
             (
                 "endpoint-address",
                 d.endpoint_address.clone().unwrap_or_default(),
             ),
-            // Peers have no `unset`, so an absent port or keepalive is written as `0`, RouterOS's
-            // default; an empty value is refused for both.
+            // Peers have no `unset`; RouterOS's default is `0`, and it refuses an empty value.
             ("endpoint-port", d.endpoint_port.unwrap_or(0).to_string()),
             (
                 "persistent-keepalive",
@@ -356,15 +320,13 @@ impl Keyed for WireguardPeers {
         let id = get_id(row)?;
         Ok(CurrentWireguardPeer {
             interface: get_required(row, "interface", &id)?.to_string(),
-            // See the module doc comment: RouterOS's own peer table has no `name` property -
-            // `comment` is used here to carry the peer's name.
+            // RouterOS peers have no `name`; the label is kept in `comment`.
             name: get(row, "comment").unwrap_or_default().to_string(),
             public_key_b64: get(row, "public-key").unwrap_or_default().to_string(),
             allowed_address: get(row, "allowed-address").unwrap_or_default().to_string(),
             endpoint_address: get(row, "endpoint-address").map(str::to_string),
-            // A cleared port reads back as `0`, see `add_attributes`.
+            // RouterOS reads a cleared port, and a keepalive never set, back as `0`.
             endpoint_port: get_opt_u16(row, "endpoint-port")?.filter(|&p| p != 0),
-            // A keepalive that sends none reads back as `0`, as one never set does.
             persistent_keepalive: get_opt_keepalive_seconds(row, "persistent-keepalive")?
                 .filter(|&seconds| seconds != 0),
             disabled: get_bool_flag(row, "disabled"),
@@ -414,7 +376,6 @@ impl Keyed for IpAddresses {
         })
     }
 
-    /// The addresses on the interfaces this tool creates and the loopback bridge.
     fn is_ours(a: &Self::Current, ours: &[String]) -> bool {
         diff::is_ours(&a.interface, ours)
     }
@@ -424,29 +385,17 @@ impl Keyed for IpAddresses {
     }
 }
 
-/// This device's own directly-connected subnets (every `ip address` row except an orphaned raw id
-/// and the loopback bridge itself), normalized to network base - the BGP-announced prefix set is
-/// computed fresh from this on every run, never configured. Candidates for
-/// `config::desired_state`'s `direct_interfaces`/`learn` filtering, which owns the policy of what
-/// actually gets announced - this function is a dumb reader, filtering nothing but our own
-/// infrastructure's dead weight (the address of a link's interface is a legitimate candidate, since
-/// `addressing.tunnel.ipv4` can give it a real one, not just a link-local).
 pub async fn read_physically_connected_prefixes(
     device: &MikrotikDevice,
 ) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
     physically_connected(&print(device, IpAddresses::PATH).await?)
 }
 
-/// The physically-connected subnets the `ip address` rows give, each by its interface.
 fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> {
     let mut prefixes = Vec::new();
     for row in rows {
         let a = IpAddresses::parse(row)?;
-        // Every interface is a candidate, a foreign one too, and the links' interfaces among
-        // them: `addressing.tunnel.ipv4` (see config.rs) can give one a real address to announce,
-        // and config::desired_state's direct_interfaces/learn matching decides what is. Only a raw
-        // id orphaned by a deleted interface (e.g. `*16`) and the loopback bridge are left out -
-        // neither is ever announce-worthy.
+        // Every address is a candidate but an orphaned raw id's and the loopback's.
         if crate::diff::is_raw_orphan_id(&a.interface) || a.interface == ROUTER_LOOPBACK {
             continue;
         }
@@ -460,9 +409,6 @@ fn physically_connected(rows: &[Row]) -> anyhow::Result<Vec<(String, Ipv4Net)>> 
     Ok(prefixes)
 }
 
-/// Normalizes a host address-with-prefix (as configured on an interface, e.g. `"203.0.113.1/27"`)
-/// to its containing network base (`"203.0.113.0/27"`) - `ip address` rows carry the host
-/// address, not the network, but a BGP-announced prefix must be the network itself.
 fn address_to_network(address: &str) -> anyhow::Result<Ipv4Net> {
     Ok(sliplib_net::parse_ipv4(address)?.trunc())
 }
@@ -500,7 +446,6 @@ impl Keyed for ListMembers {
         })
     }
 
-    /// The `LAN` list's members on the interfaces this tool creates.
     fn is_ours(m: &Self::Current, ours: &[String]) -> bool {
         m.list == crate::config::LAN_LIST && diff::is_ours(&m.interface, ours)
     }
@@ -555,8 +500,7 @@ impl Table for Ipv6Addresses {
         attributes
     }
 
-    /// `auto-link-local` is sent only when set: RouterOS rejects it on an address that is not
-    /// link-local, whatever the value.
+    /// RouterOS rejects `auto-link-local` on an address that is not link-local, whatever the value.
     fn set_attributes(d: &Self::Desired) -> Attributes {
         let mut attributes = vec![("advertise", yes_no(d.advertise))];
         if let Some(auto_link_local) = d.auto_link_local {
@@ -575,8 +519,7 @@ impl Keyed for Ipv6Addresses {
         Ok(CurrentIpv6Address {
             address: get_required(row, "address", &id)?.to_string(),
             interface: get_required(row, "interface", &id)?.to_string(),
-            // Assumed boolean-flag-shaped exactly like `disabled` (explicit "true"/"false" on
-            // read, "yes"/"no" accepted on write) - not confirmed on a device.
+            // Not confirmed on a device.
             advertise: get_bool_flag(row, "advertise"),
             auto_link_local: get_bool_flag(row, "auto-link-local"),
             disabled: get_bool_flag(row, "disabled"),
@@ -584,24 +527,8 @@ impl Keyed for Ipv6Addresses {
         })
     }
 
-    /// The addresses on the interfaces this tool creates and the loopback bridge.
-    ///
-    /// Link-local (`fe80::/10`) rows are **not** specially excluded here - both `router-lo` and
-    /// the links' interfaces are in scope, so any auto-generated link-local RouterOS puts on one of
-    /// them ends up "in footprint but not desired" and gets cleaned up like any other stale row.
-    /// This matters for two different reasons per interface type:
-    /// - the links' interfaces (WireGuard): RouterOS's own auto-generation is broken - once a
-    ///   second mesh link exists, every one of them gets the *identical* link-local, and RouterOS's
-    ///   own duplicate address detection marks every one past the first `invalid`, breaking OSPFv3
-    ///   adjacency on all of them. `config::desired_state` applies the address explicitly
-    ///   (from `awg.interfaces[].addresses`), with
-    ///   `auto-link-local=no` so that it replaces the generated one rather than sitting next to it
-    ///   - see `config::own_ipv6_address`.
-    /// - `router-lo`: its own auto-generated link-local isn't broken the same way (a bridge has a
-    ///   real MAC), but once `routing ospf instance`'s `redistribute=connected` is set (see
-    ///   [`OspfInstance`]), RouterOS redistributes *every* connected IPv6 route on that interface
-    ///   into OSPF - a link-local prefix has no business being treated as a globally routable
-    ///   destination, so nothing should be left there to redistribute by accident.
+    /// RouterOS gives every link the same generated link-local, and its DAD marks all but one
+    /// invalid; the loopback's would be redistributed into OSPF. So no generated one is kept.
     fn is_ours(a: &Self::Current, ours: &[String]) -> bool {
         diff::is_ours(&a.interface, ours)
     }
@@ -779,7 +706,6 @@ impl Keyed for OspfInterfaceTemplates {
         diff::ospf_interface_templates(current, desired)
     }
 
-    /// The `set` of a template that drops `passive` leaves the flag on, so it is unset after.
     fn commands(current: &[Self::Current], plan: &Plan<Self::Desired>) -> Vec<Command> {
         let unsets = diff::passive_to_unset(current, plan)
             .into_iter()
@@ -821,7 +747,6 @@ impl Keyed for BgpNetworks {
         })
     }
 
-    /// The entries of the `bgp-networks` list; the table holds every other list too.
     fn is_ours(e: &Self::Current, _ours: &[String]) -> bool {
         e.list == crate::config::BGP_NETWORKS_LIST
     }
@@ -909,8 +834,7 @@ impl Keyed for BgpConnections {
                 .unwrap_or_default()
                 .parse()
                 .unwrap_or(Ipv6Addr::UNSPECIFIED),
-            // `multihop`/`afi` are top-level connection properties, not under
-            // `local.`/`remote.`/`output.` - not confirmed on a device.
+            // Top-level, not under `local.`/`remote.`/`output.`: not confirmed on a device.
             multihop: get_bool_flag(row, "multihop"),
             afi: get(row, "afi").unwrap_or_default().to_string(),
             output_network: get(row, "output.network").unwrap_or_default().to_string(),
@@ -994,7 +918,6 @@ mod tests {
         ]);
         assert_eq!(OspfInterfaceTemplates::parse(&r).unwrap().passive_raw, None);
 
-        // A real device sends a passive row as `=passive=`: the key with no value.
         r.insert("passive".to_string(), None);
         let t = OspfInterfaceTemplates::parse(&r).unwrap();
         assert!(crate::diff::passive_flag_is_true(t.passive_raw.as_deref()));
@@ -1052,7 +975,7 @@ mod tests {
         assert_eq!(c.afi, "ip");
     }
 
-    /// Whether the encoded command carries `word` as one API word (one-byte length prefix).
+    /// One API word: a one-byte length, then the word.
     fn sends_word(cmd: CommandBuilder<Cmd>, word: &str) -> bool {
         let mut encoded = vec![u8::try_from(word.len()).unwrap()];
         encoded.extend_from_slice(word.as_bytes());
@@ -1142,9 +1065,7 @@ mod tests {
         }
     }
 
-    /// Rows on an interface `interface wireguard` holds, on one the tool asks for by name, on one
-    /// that is nobody's of ours, on one named like the links' interfaces and not among them, and
-    /// on the raw id a deleted interface leaves behind; each with `address`.
+    /// Rows on interfaces ours, foreign, look-alike and orphaned, each with `address`.
     fn rows_on_interfaces(address: &str) -> Vec<Row> {
         ["wg-east", "router-lo", "ether1", "wg-west", "*16"]
             .iter()
@@ -1240,7 +1161,6 @@ mod tests {
         assert!(physically_connected(&[row(&[(".id", "*1")])]).is_err());
     }
 
-    /// Each command as its kind and the row it acts on.
     fn kinds(commands: &[Command]) -> Vec<String> {
         commands
             .iter()

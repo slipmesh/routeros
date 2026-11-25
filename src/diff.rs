@@ -1,18 +1,11 @@
-//! Pure diff computation for every RouterOS table `routeros` touches: given the current rows
-//! (as parsed by `mikrotik.rs`) and the desired rows (as computed by
-//! `config::desired_state`), produce an add/update/remove [`Plan`].
-//!
-//! **Exclusive vs. shared tables**: the diff logic below is identical for both, and removes every
-//! row of `current` it does not want. A shared table's rows reach it only through
-//! `mikrotik::Keyed::is_ours`; `diff` itself cannot tell another writer's row from this tool's.
+//! The add/update/remove plan per RouterOS table. It removes every current row it does not want,
+//! so a shared table's rows reach it only through `mikrotik::Keyed::is_ours`.
 
 use sliplib_secrets::wireguard::PrivateKey;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-/// Add/update/remove plan for one RouterOS table. `update`/`remove` carry the RouterOS `.id` of
-/// the row to act on; `add` carries only the desired value (no `.id` exists yet).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan<D> {
     pub add: Vec<D>,
@@ -27,17 +20,10 @@ impl<D> Plan<D> {
     }
 }
 
-/// Implemented by every row read from the device - lets `diff` take a row's id, and `converge.rs`
-/// look up the full row behind a bare RouterOS `.id` in `Plan::remove` for readable `--diff`
-/// output (`- table: <row>`, not the opaque `- table (*C)` a raw id alone gives you).
 pub trait HasId {
     fn id(&self) -> &str;
 }
 
-/// Generic keyed reconcile: every `current` row whose key isn't in `desired` is removed; every
-/// `desired` row whose key isn't in `current` is added; a key present in both is updated only if
-/// `unchanged` says the fields actually differ. See the module doc comment for the exclusive-vs-
-/// shared distinction this same function serves.
 fn diff<C, D, K>(
     current: &[C],
     desired: &[D],
@@ -75,8 +61,6 @@ where
     }
 }
 
-/// A singleton RouterOS object (at most one row this tool cares about), found with its id: added
-/// when there is none, updated by its id when its fields differ.
 pub fn singleton<T: PartialEq + Clone>(current: Option<&(String, T)>, desired: &T) -> Plan<T> {
     let (add, update) = match current {
         None => (vec![desired.clone()], vec![]),
@@ -90,32 +74,21 @@ pub fn singleton<T: PartialEq + Clone>(current: Option<&(String, T)>, desired: &
     }
 }
 
-/// RouterOS's API returns an empty string for a "true" flag-style property (e.g. `passive`), not
-/// a boolean - `Some("true")` is also accepted defensively, but the empty string is what a real
-/// device actually sends.
+/// RouterOS sends a set flag-style property (`passive`) as an empty string.
 pub fn passive_flag_is_true(raw: Option<&str>) -> bool {
     matches!(raw, Some("") | Some("true"))
 }
 
-/// Whether `interface` is this tool's: one of `ours` - the rows of `interface wireguard`, a table
-/// only this tool writes, and the interfaces it asks for - or the raw internal id RouterOS puts in
-/// place of an interface already deleted (`*<hex>`, unresolvable back to a name). A row on any
-/// other interface, a physical WAN or LAN port among them, is never considered for removal.
+/// RouterOS leaves a raw id (`*<hex>`) in place of a deleted interface.
 pub fn is_ours(interface: &str, ours: &[String]) -> bool {
     ours.iter().any(|our| our == interface) || is_raw_orphan_id(interface)
 }
 
-/// True for a leftover raw internal id (e.g. `*16`) an address gets orphaned on after this tool
-/// deletes the interface it used to belong to - never a real physically-connected LAN prefix
-/// worth announcing, unlike the address of a link's interface (see
-/// `mikrotik::read_physically_connected_prefixes`, which excludes only this, not those).
 pub fn is_raw_orphan_id(interface: &str) -> bool {
     interface
         .strip_prefix('*')
         .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit()))
 }
-
-// ── interface wireguard (exclusive) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredWireguardInterface {
@@ -123,7 +96,6 @@ pub struct DesiredWireguardInterface {
     pub listen_port: u16,
     pub private_key_b64: PrivateKey,
     pub disabled: bool,
-    /// None leaves the interface at the MTU it has.
     pub mtu: Option<u32>,
 }
 
@@ -153,16 +125,13 @@ pub fn wireguard_interfaces(
         |c| c.name.clone(),
         |d| d.name.clone(),
         |c, d| {
-            // RouterOS hands a key back clamped and taloscfg writes it unclamped: compared as text,
-            // every run would rewrite a live interface, peers and OSPF adjacency with it.
+            // RouterOS reads a key back clamped: compared as text, each run would rewrite it.
             (c.listen_port, c.disabled, &c.private_key_b64)
                 == (d.listen_port, d.disabled, &d.private_key_b64)
                 && d.mtu.is_none_or(|mtu| c.mtu == Some(mtu))
         },
     )
 }
-
-// ── interface wireguard peers (exclusive) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredWireguardPeer {
@@ -215,8 +184,6 @@ pub fn wireguard_peers(
     )
 }
 
-// ── ip address (shared) ──
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredIpAddress {
     pub address: String,
@@ -238,9 +205,6 @@ impl HasId for CurrentIpAddress {
     }
 }
 
-/// Staleness is judged by the (interface, address) **pair**, not the address alone - a link can
-/// keep its address but move interface (or vice versa). `current` must already be pre-filtered by
-/// the caller to this tool's own footprint (see the module doc comment).
 pub fn ip_addresses(
     current: &[CurrentIpAddress],
     desired: &[DesiredIpAddress],
@@ -254,10 +218,7 @@ pub fn ip_addresses(
     )
 }
 
-// ── ipv6 address (shared) ──
-
-/// `advertise` mirrors `/ipv6 address add ... advertise=no` on the loopback ULA `/128` -
-/// prevents this address being announced via SLAAC RA on an interface that isn't a real LAN.
+/// `advertise=no` keeps RouterOS from announcing the loopback's address by SLAAC RA.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredIpv6Address {
     pub address: String,
@@ -283,9 +244,6 @@ impl HasId for CurrentIpv6Address {
     }
 }
 
-/// Same shape/staleness rule as [`ip_addresses`] - `current` must already be pre-filtered by the
-/// caller to this tool's own footprint (see the module doc comment): the loopback bridge and the
-/// links' interfaces.
 pub fn ipv6_addresses(
     current: &[CurrentIpv6Address],
     desired: &[DesiredIpv6Address],
@@ -302,8 +260,6 @@ pub fn ipv6_addresses(
         },
     )
 }
-
-// ── interface list member (shared) ──
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredListMember {
@@ -326,14 +282,6 @@ impl HasId for CurrentListMember {
     }
 }
 
-/// `current` must already be pre-filtered via [`is_ours`] (see the module
-/// doc comment) - an unrelated `LAN` member (e.g. a physical WAN interface) must never reach this
-/// function, or it would be removed the moment it isn't also in `desired`.
-///
-/// The resulting `Plan.remove` must be applied *before* `wireguard_interfaces`'s own removals -
-/// RouterOS otherwise leaves a `list member` row pointing at an unresolvable raw id (`*<hex>`)
-/// once the interface it referenced is already gone. `Plan.add`/`Plan.update` are applied after
-/// (a newly desired interface doesn't exist yet until that same step creates it).
 pub fn list_members(
     current: &[CurrentListMember],
     desired: &[DesiredListMember],
@@ -347,13 +295,9 @@ pub fn list_members(
     )
 }
 
-// ── routing ospf interface-template (exclusive) ──
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredOspfInterfaceTemplate {
     pub interfaces: String,
-    /// Asks OSPF to consult BFD for this interface's neighbour. Inert on its own: without a
-    /// matching `/routing/bfd/configuration` entry RouterOS forbids the session outright.
     pub use_bfd: bool,
     pub area: String,
     pub type_: Option<String>,
@@ -384,8 +328,7 @@ impl HasId for CurrentOspfInterfaceTemplate {
     }
 }
 
-/// The updated templates whose `passive` flag the device has and desired drops. `set` can't clear
-/// it - `passive=no` leaves the flag on - so these need an `unset`.
+/// `set` with `passive=no` leaves RouterOS's flag on, so these need an `unset`.
 pub fn passive_to_unset(
     current: &[CurrentOspfInterfaceTemplate],
     plan: &Plan<DesiredOspfInterfaceTemplate>,
@@ -412,12 +355,7 @@ pub fn ospf_interface_templates(
         |c| c.interfaces.clone(),
         |d| d.interfaces.clone(),
         |c, d| {
-            // A `None` in `desired` means "we don't set this field, let RouterOS use its own
-            // default" (only true for the passive loopback entry - every peer entry always sets
-            // all four) - RouterOS's `/print` still echoes back its resolved default value (e.g.
-            // `type=broadcast, cost=1`) even though nothing configured it, so comparing `None !=
-            // Some(_)` directly would flag a phantom "update" on every single run. Confirmed
-            // against a real device.
+            // RouterOS reads back its own defaults for fields left unset.
             c.area == d.area
                 && d.type_.as_ref().is_none_or(|t| c.type_.as_ref() == Some(t))
                 && d.cost.is_none_or(|v| c.cost == Some(v))
@@ -434,13 +372,10 @@ pub fn ospf_interface_templates(
     )
 }
 
-// ── routing bfd configuration (exclusive) ──
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBfdConfiguration {
     pub interfaces: String,
-    /// RouterOS time literals (`300ms`), not milliseconds: `/print` echoes back what was set,
-    /// the same textual comparison the OSPF timers above already rely on.
+    /// RouterOS time literals (`300ms`), compared as text as `/print` echoes them.
     pub min_rx: String,
     pub min_tx: String,
     pub multiplier: u16,
@@ -478,8 +413,6 @@ pub fn bfd_configurations(
     )
 }
 
-// ── ip firewall address-list (shared) ──
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredAddressListEntry {
     pub list: String,
@@ -501,8 +434,6 @@ impl HasId for CurrentAddressListEntry {
     }
 }
 
-/// `current` must already be pre-filtered by the caller to `list == "bgp-networks"` (see the
-/// module doc comment) - this table is shared with any other address-list a device might have.
 pub fn bgp_networks(
     current: &[CurrentAddressListEntry],
     desired: &[DesiredAddressListEntry],
@@ -516,8 +447,6 @@ pub fn bgp_networks(
     )
 }
 
-// ── singleton values (interface bridge, ospf/bgp instance+area) ──
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBridge {
     pub name: String,
@@ -529,16 +458,9 @@ pub struct DesiredOspfInstance {
     pub name: String,
     pub version: u8,
     pub router_id: Ipv4Addr,
-    /// `redistribute=connected` - without it, RouterOS's `passive` flag on an interface-template
-    /// suppresses hellos (adjacencies still form on non-passive interfaces) but does **not**
-    /// originate an Intra-Area-Prefix-LSA for the passive interface's own connected route, unlike
-    /// BIRD's `stub yes` on the Linux side. With only `passive` set, `routing ospf lsa print`
-    /// shows zero `type="prefix"` LSAs self-originated for the loopback bridge's own ULA `/128`,
-    /// so no other node can compute a route to it and iBGP - which dials that same loopback -
-    /// never establishes. `redistribute=connected` makes the `type="intra-area-prefix"` LSA
-    /// later). Safe as a blanket "redistribute every connected route" (not just the loopback):
-    /// this OSPF instance is IPv6-only (`version=3`), and the loopback bridge is the only interface
-    /// in this tool's scope with an IPv6 address at all - `home`/`uplink` are IPv4-only.
+    /// RouterOS' `passive` originates no prefix LSA for the loopback, so iBGP to it never comes up.
+    /// Redistributing every connected route is safe: this instance is IPv6-only, and the loopback
+    /// is the only interface with an IPv6 address.
     pub redistribute_connected: bool,
     pub disabled: bool,
 }
@@ -560,12 +482,8 @@ pub struct DesiredBgpInstance {
     pub disabled: bool,
 }
 
-// ── routing bgp connection (exclusive) ──
-
-/// `local_address`/`remote_address` are IPv6 loopbacks (OSPFv3/RFC 8950 underlay - peers sit
-/// multiple OSPF hops apart, not on a directly-connected link, hence `multihop`). `afi` is
-/// RouterOS 7.20+'s explicit AFI selector - without it, a session negotiates `afi=ipv6` only and
-/// a BIRD peer expecting an RFC 8950 IPv4-over-IPv6 session drops it.
+/// The loopbacks are several OSPF hops apart, so the sessions are `multihop`. Without `afi`,
+/// RouterOS negotiates IPv6 only and BIRD drops the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredBgpConnection {
     pub name: String,
@@ -841,9 +759,6 @@ mod list_members_tests {
 
     #[test]
     fn footprint_check_includes_orphaned_raw_ids() {
-        // Left behind by RouterOS once a wireguard interface this tool created was deleted -
-        // must still be recognized as ours so it can be pruned, even though it no longer matches
-        // any name of ours.
         assert!(is_ours("*4A", &[]));
         assert!(!is_ours("*not-hex", &[]));
         assert!(!is_ours("*", &[]));
@@ -941,10 +856,6 @@ mod ospf_interface_templates_tests {
 
     #[test]
     fn routeros_default_values_for_unset_optional_fields_are_a_noop() {
-        // Confirmed against a real device: RouterOS echoes back its own resolved defaults
-        // (type=broadcast, cost=1, hello/dead-interval=10s/40s) for the loopback entry even
-        // though desired leaves all four unset (None) - must not be flagged as a phantom update
-        // on every single run.
         let cur = vec![CurrentOspfInterfaceTemplate {
             id: "*1".to_string(),
             interfaces: "router-lo".to_string(),
@@ -966,8 +877,6 @@ mod ospf_interface_templates_tests {
         assert_eq!(plan.update, vec![("*1".to_string(), des[0].clone())]);
     }
 
-    /// Losing this comparison leaves a device on `use-bfd=no` for good: the BFD entries would
-    /// still be converged, and nothing would ever consult them.
     #[test]
     fn turning_bfd_on_updates_the_template_rather_than_replacing_it() {
         let mut cur = vec![CurrentOspfInterfaceTemplate {
@@ -1086,7 +995,6 @@ mod ipv6_addresses_tests {
             .is_unicast_link_local()
     }
 
-    /// Shaped like `config::desired_state` builds it: the flag is set only on a link-local.
     fn desired(address: &str, interface: &str) -> DesiredIpv6Address {
         DesiredIpv6Address {
             address: address.to_string(),
@@ -1097,8 +1005,6 @@ mod ipv6_addresses_tests {
         }
     }
 
-    /// Shaped like a converged device reports it: `no` on our link-locals, and RouterOS's default
-    /// `yes` on any other address, where the flag cannot be changed.
     fn current(id: &str, address: &str, interface: &str) -> CurrentIpv6Address {
         CurrentIpv6Address {
             id: id.to_string(),
@@ -1119,8 +1025,6 @@ mod ipv6_addresses_tests {
         auto_link_local.auto_link_local = true;
         let cases = [
             (loopback.clone(), advertised.clone(), Some(advertised)),
-            // A manual link-local on `auto-link-local=yes` sits next to the one RouterOS generates
-            // after every boot, and OSPFv3 may bind to that one.
             (
                 auto_link_local,
                 desired("fe80::ff/64", "mesh-2"),
@@ -1174,7 +1078,6 @@ mod bfd_configuration_tests {
                 "mesh-east",
                 none.clone(),
             ),
-            // A device left on other timers detects a dead link at another speed than the far end.
             (
                 current("*1", "mesh-east", "900ms"),
                 "mesh-east",
@@ -1183,7 +1086,6 @@ mod bfd_configuration_tests {
                     ..none.clone()
                 },
             ),
-            // A renamed link is another entry, and the old one has to go.
             (
                 current("*1", "mesh-gone", "300ms"),
                 "mesh-new",

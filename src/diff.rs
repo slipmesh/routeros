@@ -1,5 +1,5 @@
 //! Pure diff computation for every RouterOS table `routeros` touches: given the current rows
-//! (as parsed by `mikrotik.rs`'s `read_*` functions) and the desired rows (as computed by
+//! (as parsed by `mikrotik.rs`) and the desired rows (as computed by
 //! `config::desired_state`), produce an add/update/remove [`Plan`].
 //!
 //! **Exclusive vs. shared tables**: the diff logic below is identical for both -
@@ -7,8 +7,8 @@
 //! (`interface wireguard[/peers]`, `routing ospf interface-template`, `routing bgp connection`),
 //! nothing else on the device ever writes it, so `current` is simply the whole table and "remove
 //! everything not desired" is always safe. For a shared table (`ip address`, `interface list
-//! member`, `ip firewall address-list`), `mikrotik.rs`'s `read_*` must pre-filter `current` down
-//! to only rows plausibly owned by this tool (matching interface/list naming) *before* calling
+//! member`, `ip firewall address-list`), `mikrotik`'s read must cut `current` down to only rows
+//! plausibly owned by this tool (`Keyed::is_ours`, matching interface/list naming) *before* calling
 //! into this module - `diff` itself has no way to tell the difference and must never be handed an
 //! unfiltered shared table.
 
@@ -26,15 +26,16 @@ pub struct Plan<D> {
     pub remove: Vec<String>,
 }
 
+#[cfg(test)]
 impl<D> Plan<D> {
     pub fn is_empty(&self) -> bool {
         self.add.is_empty() && self.update.is_empty() && self.remove.is_empty()
     }
 }
 
-/// Implemented by every `Current*` row type - lets `converge.rs` look up the full row behind a
-/// bare RouterOS `.id` in `Plan::remove` for readable `--diff` output (`- table: <row>`, not the
-/// opaque `- table (*C)` a raw id alone gives you).
+/// Implemented by every row read from the device - lets `diff` take a row's id, and `converge.rs`
+/// look up the full row behind a bare RouterOS `.id` in `Plan::remove` for readable `--diff`
+/// output (`- table: <row>`, not the opaque `- table (*C)` a raw id alone gives you).
 pub trait HasId {
     fn id(&self) -> &str;
 }
@@ -48,10 +49,10 @@ fn diff<C, D, K>(
     desired: &[D],
     current_key: impl Fn(&C) -> K,
     desired_key: impl Fn(&D) -> K,
-    current_id: impl Fn(&C) -> String,
     unchanged: impl Fn(&C, &D) -> bool,
 ) -> Plan<D>
 where
+    C: HasId,
     D: Clone,
     K: Eq + Hash,
 {
@@ -64,10 +65,10 @@ where
         match desired_by_key.remove(&current_key(c)) {
             Some(d) => {
                 if !unchanged(c, d) {
-                    update.push((current_id(c), d.clone()));
+                    update.push((c.id().to_owned(), d.clone()));
                 }
             }
-            None => remove.push(current_id(c)),
+            None => remove.push(c.id().to_owned()),
         }
     }
 
@@ -80,20 +81,18 @@ where
     }
 }
 
-/// A singleton RouterOS object (at most one row this tool cares about) either doesn't exist yet,
-/// exists and already matches, or exists with different fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SingletonOp<T> {
-    NoOp,
-    Create(T),
-    Update(String, T),
-}
-
-pub fn singleton<T: PartialEq>(current: Option<(String, T)>, desired: T) -> SingletonOp<T> {
-    match current {
-        None => SingletonOp::Create(desired),
-        Some((_, existing)) if existing == desired => SingletonOp::NoOp,
-        Some((id, _)) => SingletonOp::Update(id, desired),
+/// A singleton RouterOS object (at most one row this tool cares about), found with its id: added
+/// when there is none, updated by its id when its fields differ.
+pub fn singleton<T: PartialEq + Clone>(current: Option<&(String, T)>, desired: &T) -> Plan<T> {
+    let (add, update) = match current {
+        None => (vec![desired.clone()], vec![]),
+        Some((_, existing)) if existing == desired => (vec![], vec![]),
+        Some((id, _)) => (vec![], vec![(id.clone(), desired.clone())]),
+    };
+    Plan {
+        add,
+        update,
+        remove: vec![],
     }
 }
 
@@ -159,7 +158,6 @@ pub fn wireguard_interfaces(
         desired,
         |c| c.name.clone(),
         |d| d.name.clone(),
-        |c| c.id.clone(),
         |c, d| {
             // RouterOS hands a key back clamped and taloscfg writes it unclamped: compared as text,
             // every run would rewrite a live interface, peers and OSPF adjacency with it.
@@ -212,7 +210,6 @@ pub fn wireguard_peers(
         desired,
         |c| (c.interface.clone(), c.name.clone()),
         |d| (d.interface.clone(), d.name.clone()),
-        |c| c.id.clone(),
         |c, d| {
             c.public_key_b64 == d.public_key_b64
                 && c.allowed_address == d.allowed_address
@@ -259,7 +256,6 @@ pub fn ip_addresses(
         desired,
         |c| (c.interface.clone(), c.address.clone()),
         |d| (d.interface.clone(), d.address.clone()),
-        |c| c.id.clone(),
         |c, d| c.disabled == d.disabled,
     )
 }
@@ -305,7 +301,6 @@ pub fn ipv6_addresses(
         desired,
         |c| (c.interface.clone(), c.address.clone()),
         |d| (d.interface.clone(), d.address.clone()),
-        |c| c.id.clone(),
         |c, d| {
             c.advertise == d.advertise
                 && d.auto_link_local.is_none_or(|v| v == c.auto_link_local)
@@ -354,7 +349,6 @@ pub fn list_members(
         desired,
         |c| (c.list.clone(), c.interface.clone()),
         |d| (d.list.clone(), d.interface.clone()),
-        |c| c.id.clone(),
         |c, d| c.disabled == d.disabled,
     )
 }
@@ -423,7 +417,6 @@ pub fn ospf_interface_templates(
         desired,
         |c| c.interfaces.clone(),
         |d| d.interfaces.clone(),
-        |c| c.id.clone(),
         |c, d| {
             // A `None` in `desired` means "we don't set this field, let RouterOS use its own
             // default" (only true for the passive loopback entry - every peer entry always sets
@@ -483,7 +476,6 @@ pub fn bfd_configurations(
         desired,
         |c| c.interfaces.clone(),
         |d| d.interfaces.clone(),
-        |c| c.id.clone(),
         |c, d| {
             c.min_rx.as_deref() == Some(d.min_rx.as_str())
                 && c.min_tx.as_deref() == Some(d.min_tx.as_str())
@@ -526,7 +518,6 @@ pub fn bgp_networks(
         desired,
         |c| (c.list.clone(), c.address.clone()),
         |d| (d.list.clone(), d.address.clone()),
-        |c| c.id.clone(),
         |c, d| c.disabled == d.disabled,
     )
 }
@@ -623,7 +614,6 @@ pub fn bgp_connections(
         desired,
         |c| c.name.clone(),
         |d| d.name.clone(),
-        |c| c.id.clone(),
         |c, d| {
             c.instance == d.instance
                 && c.local_address == d.local_address
@@ -638,44 +628,23 @@ pub fn bgp_connections(
 }
 
 #[cfg(test)]
-mod plan_tests {
-    use super::*;
-
-    #[test]
-    fn is_empty_true_only_when_nothing_to_do() {
-        let empty: Plan<u8> = Plan {
-            add: vec![],
-            update: vec![],
-            remove: vec![],
-        };
-        assert!(empty.is_empty());
-
-        let with_add = Plan {
-            add: vec![1u8],
-            update: vec![],
-            remove: vec![],
-        };
-        assert!(!with_add.is_empty());
-    }
-}
-
-#[cfg(test)]
 mod singleton_tests {
     use super::*;
 
     #[test]
     fn a_singleton_is_created_left_or_updated_by_id() {
+        let plan = |add: &[&'static str], update: &[&'static str]| Plan {
+            add: add.to_vec(),
+            update: update.iter().map(|d| ("id1".to_string(), *d)).collect(),
+            remove: vec![],
+        };
         let cases = [
-            (None, "desired", SingletonOp::Create("desired")),
-            (Some(("id1".to_string(), "same")), "same", SingletonOp::NoOp),
-            (
-                Some(("id1".to_string(), "old")),
-                "new",
-                SingletonOp::Update("id1".to_string(), "new"),
-            ),
+            (None, "desired", plan(&["desired"], &[])),
+            (Some(("id1".to_string(), "same")), "same", plan(&[], &[])),
+            (Some(("id1".to_string(), "old")), "new", plan(&[], &["new"])),
         ];
-        for (current, desired, op) in cases {
-            assert_eq!(singleton(current, desired), op);
+        for (current, desired, expected) in cases {
+            assert_eq!(singleton(current.as_ref(), &desired), expected);
         }
     }
 }
@@ -884,6 +853,30 @@ mod list_members_tests {
         assert!(is_ours("*4A", &[]));
         assert!(!is_ours("*not-hex", &[]));
         assert!(!is_ours("*", &[]));
+    }
+
+    #[test]
+    fn a_member_is_updated_by_its_id_only_when_disabled_differs() {
+        let member = |id: &str, interface: &str, disabled| CurrentListMember {
+            id: id.to_owned(),
+            list: "LAN".to_owned(),
+            interface: interface.to_owned(),
+            disabled,
+        };
+        let desired = |interface: &str| DesiredListMember {
+            list: "LAN".to_owned(),
+            interface: interface.to_owned(),
+            disabled: false,
+        };
+        let plan = list_members(
+            &[
+                member("*1", "mesh-east", true),
+                member("*2", "mesh-west", false),
+            ],
+            &[desired("mesh-east"), desired("mesh-west")],
+        );
+        assert_eq!(plan.update, [("*1".to_owned(), desired("mesh-east"))]);
+        assert!(plan.add.is_empty() && plan.remove.is_empty());
     }
 }
 

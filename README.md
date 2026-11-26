@@ -38,9 +38,10 @@ Requires:
   names `slipmesh mint`, which creates the key and writes the prefix. A file of version 1 is
   converted as "Converting a file by hand" in sliplib's `docs/slipmesh-yaml-v1-to-v2.md` says,
   the document its refusal names. The `platform` document of `routeros`, where there is one,
-  takes no key. This tool checks only what its own node's configs
-  need: a file the Talos generator refuses for a Talos-only reason - a template, a patch document,
-  an annotation - is still accepted here.
+  takes no key. The network's own checks, the route classes' among them, run here as in every
+  tool. What this tool leaves to the Talos generator is the bodies of `template`, `patch` and
+  `vars` documents and the annotations; a `template`, `patch` or `vars` document aimed at
+  `routeros` is refused.
 - The device's API credentials in the environment:
 
   | variable | |

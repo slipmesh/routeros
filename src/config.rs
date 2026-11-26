@@ -346,7 +346,7 @@ mod tests {
                 loopback_addresses: sliplib_yaml::from_str(r#"["198.51.100.1/32", "3fff::1/128"]"#)
                     .unwrap(),
             },
-            bgp_as: 65062,
+            bgp_as: 64496,
             bgp_peers: vec![],
             ospf_interfaces: vec![],
             direct_interfaces: vec![],
@@ -446,7 +446,7 @@ mod tests {
             state.ospf_instance.router_id,
             Ipv4Addr::new(198, 51, 100, 1)
         );
-        assert_eq!(state.bgp_instance.as_number, 65062);
+        assert_eq!(state.bgp_instance.as_number, 64496);
         assert_eq!(state.ospf_interface_templates.len(), 1);
         assert!(state.ospf_interface_templates[0].passive);
         assert_eq!(state.bgp_networks.len(), 1);

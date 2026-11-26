@@ -61,7 +61,7 @@ mod tests {
 addressing:
   loopback: {{ipv4: 198.51.100.0/25, ipv6: "3fff::/64"}}
 routing:
-  bgp: {{as: 64512}}
+  bgp: {{as: 64496}}
 mesh:
   interface_prefix: mesh-
   links:
@@ -107,7 +107,7 @@ nodes:
         let file = written(&fixture());
         let path = file.path();
         let configs = read_node(&[path], "router1").unwrap();
-        assert_eq!(configs.router.bgp_as, 64512);
+        assert_eq!(configs.router.bgp_as, 64496);
         let direct: Vec<&str> = configs
             .router
             .direct_interfaces
